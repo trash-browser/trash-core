@@ -1,0 +1,26 @@
+[package]
+name = "trashbrowser-gpui"
+version = "0.1.0"
+edition = "2024"
+description = "Trash Browser — GPUI chrome + CEF content"
+
+[[bin]]
+name = "trashbrowser-gpui"
+path = "src/main.rs"
+
+[dependencies]
+cef = { version = "=150.0.0", default-features = false }
+gpui = { path = "../gpui-se", default-features = false, features = [
+    "font-kit",
+    "x11",
+] }
+gpui_platform = { path = "../gpui-se/crates/gpui_platform", features = [
+    "font-kit",
+    "x11",
+] }
+raw-window-handle = "0.6"
+unicode-segmentation = "1"
+x11-dl = "2"
+
+[profile.dev]
+debug = 1

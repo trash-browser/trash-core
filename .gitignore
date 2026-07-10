@@ -1,0 +1,41 @@
+# Rust / Cargo
+/target/
+**/*.rs.bk
+*.pdb
+
+# Local cargo config (machine-specific CEF paths)
+.cargo/config.toml
+.cargo/config.local.toml
+
+# CEF / native artifacts
+*.so
+*.so.*
+*.dylib
+*.dll
+*.lib
+*.a
+cef_cache/
+cef_user_data/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# IDE / editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# OS
+Thumbs.db
+Desktop.ini
+
+# Logs / debug
+*.log
+*.trace
+core
+core.*
