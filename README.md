@@ -16,10 +16,16 @@ To check without producing the final executable:
 python build.py --check
 ```
 
-Pass additional Cargo options after `--`, for example:
+For an optimized build:
 
 ```sh
-python build.py -- --release
+python build.py --release
+```
+
+Pass any other Cargo options after `--`, for example:
+
+```sh
+python build.py -- --locked
 ```
 
 On Windows, the script uses Ninja from `PATH` or from a Visual Studio

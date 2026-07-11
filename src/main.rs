@@ -1,4 +1,5 @@
 //! Trash Browser — GPUI chrome + CEF content in a native child window.
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod cef_host;
 mod content;

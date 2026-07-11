@@ -174,6 +174,11 @@ def main() -> int:
         help="run cargo check instead of cargo build",
     )
     parser.add_argument(
+        "--release",
+        action="store_true",
+        help="build in release mode (passes --release to cargo)",
+    )
+    parser.add_argument(
         "cargo_args",
         nargs=argparse.REMAINDER,
         help="additional Cargo arguments (place them after --)",
@@ -191,6 +196,8 @@ def main() -> int:
     build_shell(shell_env(cef_dir))
 
     command = ["cargo", "check" if args.check else "build"]
+    if args.release:
+        command.append("--release")
     cargo_args = args.cargo_args
     if cargo_args[:1] == ["--"]:
         cargo_args = cargo_args[1:]
