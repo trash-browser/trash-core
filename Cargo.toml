@@ -36,3 +36,19 @@ embed-resource = "3"
 
 [profile.dev]
 debug = 1
+
+# Shipping build: tuned for runtime performance over compile time. Without this
+# section the release binary falls back to Cargo defaults (codegen-units = 16,
+# no LTO), which leaves cross-crate inlining across gpui/cef/our own code on the
+# table. This is the binary users actually run, so favor codegen quality.
+[profile.release]
+opt-level = 3
+lto = "fat"           # cross-crate inlining across gpui / cef / trashbrowser
+codegen-units = 1     # best codegen; trades parallel build time for speed
+strip = "debuginfo"   # smaller binary, zero runtime cost
+# panic stays "unwind" (default): CEF and our worker threads rely on unwinding.
+
+# Optimize heavy dependencies even in dev builds so the debug browser stays
+# usable. Our own crates keep full debug info / no opt for fast iteration.
+[profile.dev.package."*"]
+opt-level = 2
