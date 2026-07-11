@@ -33,12 +33,8 @@ use crate::direct_manipulation::DirectManipulationHandler;
 use crate::*;
 use gpui::*;
 
-type TaskDialogIndirectFn = unsafe extern "system" fn(
-    *const TASKDIALOGCONFIG,
-    *mut i32,
-    *mut i32,
-    *mut BOOL,
-) -> HRESULT;
+type TaskDialogIndirectFn =
+    unsafe extern "system" fn(*const TASKDIALOGCONFIG, *mut i32, *mut i32, *mut BOOL) -> HRESULT;
 
 unsafe fn task_dialog_indirect_dynamic(
     config: *const TASKDIALOGCONFIG,
@@ -478,7 +474,10 @@ impl WindowsWindow {
         );
 
         let (mut dwexstyle, dwstyle) = if params.kind == WindowKind::PopUp {
-            (WS_EX_TOOLWINDOW, WINDOW_STYLE(0x0))
+            // An owned popup must be a real top-level WS_POPUP. A zero style is
+            // treated as an overlapped window and can produce an unpainted white
+            // surface or incorrect activation/teardown behavior.
+            (WS_EX_TOOLWINDOW, WS_POPUP)
         } else {
             let mut dwstyle = WS_SYSMENU;
 
@@ -557,6 +556,22 @@ impl WindowsWindow {
         register_drag_drop(&this)?;
         set_non_rude_hwnd(hwnd, true);
         configure_dwm_dark_mode(hwnd, appearance);
+        if params.kind == WindowKind::PopUp {
+            // Flyouts use the same small rounded native window shape as Edge.
+            // Besides matching the platform, clipping at the HWND level keeps
+            // transparent RGBA corner pixels from showing the swap-chain clear
+            // colour on systems where popup alpha composition is unavailable.
+            let corner = DWMWCP_ROUNDSMALL;
+            unsafe {
+                DwmSetWindowAttribute(
+                    hwnd,
+                    DWMWA_WINDOW_CORNER_PREFERENCE,
+                    &corner as *const _ as _,
+                    std::mem::size_of_val(&corner) as u32,
+                )
+                .ok();
+            }
+        }
         this.state.border_offset.update(hwnd)?;
         let placement = retrieve_window_placement(
             hwnd,

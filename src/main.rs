@@ -1,9 +1,12 @@
 //! Trash Browser — GPUI chrome + CEF content in a native child window.
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
+mod browser_menu;
 mod cef_host;
 mod content;
 mod omnibox;
+mod popup;
+mod tab_lifecycle;
 
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
@@ -110,6 +113,7 @@ struct Root {
     start_uri: String,
     /// Last OS window title pushed to the platform (avoids redundant updates).
     os_title: String,
+    menu_command: std::sync::Arc<std::sync::Mutex<Option<browser_menu::BrowserMenuCommand>>>,
 }
 
 impl Root {
@@ -162,6 +166,10 @@ impl Root {
         // the native parent window are both ready (see cef_host::show_tab).
         cef_host::show_tab(1, &start_uri);
 
+        let menu_command: std::sync::Arc<
+            std::sync::Mutex<Option<browser_menu::BrowserMenuCommand>>,
+        > = Default::default();
+
         Self {
             tabs: vec![Tab::blank(1, "Start")],
             active: 1,
@@ -176,6 +184,7 @@ impl Root {
             cef_rx,
             start_uri,
             os_title: String::new(),
+            menu_command,
         }
     }
 
@@ -196,6 +205,14 @@ impl Root {
     }
 
     fn pump_cef(&mut self, cx: &mut Context<Self>) {
+        let command = self
+            .menu_command
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take());
+        if let Some(command) = command {
+            self.run_browser_menu_command(command, cx);
+        }
         let mut events = Vec::new();
         cef_host::pump(&self.cef_rx, &mut events);
         if events.is_empty() {
@@ -366,49 +383,53 @@ impl Root {
     }
 
     fn close_tab(&mut self, id: u64, cx: &mut Context<Self>) {
-        let Some(i) = self.tabs.iter().position(|t| t.id == id) else {
+        let mut ids: Vec<_> = self.tabs.iter().map(|tab| tab.id).collect();
+        let outcome = tab_lifecycle::close_tab(&mut ids, self.active, id);
+        if outcome == tab_lifecycle::CloseOutcome::Ignored {
             return;
-        };
-        self.tabs.remove(i);
-        // Tear down this tab's browser regardless of whether it was active.
+        }
+        self.tabs.retain(|tab| tab.id != id);
+        // Activate (or create) the replacement before tearing down the old CEF
+        // browser. In particular, closing the final tab must never leave CEF
+        // with no active/pending browser: on Windows that transient zero-browser
+        // state can run the native close path and take the app window with it.
+        self.apply_close_outcome(outcome, cx);
+        // This closes only the CefBrowser owned by the tab. Application/window
+        // shutdown is handled exclusively by the top-level close command.
         cef_host::close_tab(id);
-        if self.tabs.is_empty() {
-            cef_host::close_browser();
-            cx.quit();
-            return;
-        }
-        if self.active == id {
-            let neighbor = i.min(self.tabs.len() - 1);
-            self.active = self.tabs[neighbor].id;
-            self.url_dirty = false;
-            self.sync_omnibox(cx);
-            let url = self.active_content_url();
-            cef_host::show_tab(self.active, &url);
-        }
-        cx.notify();
     }
 
     /// Retire the chrome tab whose browser closed itself. Its CEF browser is
     /// already gone, so unlike `close_tab` this does not call into `cef_host` to
     /// close anything — it only fixes up the tab strip and active selection.
     fn on_browser_closed(&mut self, tab_id: u64, cx: &mut Context<Self>) {
-        let Some(i) = self.tabs.iter().position(|t| t.id == tab_id) else {
-            return;
-        };
-        self.tabs.remove(i);
-        if self.tabs.is_empty() {
-            cef_host::close_browser();
-            cx.quit();
+        let mut ids: Vec<_> = self.tabs.iter().map(|tab| tab.id).collect();
+        let outcome = tab_lifecycle::close_tab(&mut ids, self.active, tab_id);
+        if outcome == tab_lifecycle::CloseOutcome::Ignored {
             return;
         }
-        if self.active == tab_id {
-            let neighbor = i.min(self.tabs.len() - 1);
-            self.active = self.tabs[neighbor].id;
-            self.url_dirty = false;
-            self.sync_omnibox(cx);
-            let url = self.active_content_url();
-            cef_host::show_tab(self.active, &url);
+        self.tabs.retain(|tab| tab.id != tab_id);
+        self.apply_close_outcome(outcome, cx);
+    }
+
+    fn apply_close_outcome(
+        &mut self,
+        outcome: tab_lifecycle::CloseOutcome,
+        cx: &mut Context<Self>,
+    ) {
+        match outcome {
+            tab_lifecycle::CloseOutcome::Ignored => return,
+            tab_lifecycle::CloseOutcome::CreateBlank => {
+                self.new_tab(cx);
+                return;
+            }
+            tab_lifecycle::CloseOutcome::Activate(id) => self.active = id,
+            tab_lifecycle::CloseOutcome::KeepActive(id) => self.active = id,
         }
+        self.url_dirty = false;
+        self.sync_omnibox(cx);
+        let url = self.active_content_url();
+        cef_host::show_tab(self.active, &url);
         cx.notify();
     }
 
@@ -420,6 +441,75 @@ impl Root {
     fn go_forward(&mut self, _cx: &mut Context<Self>) {
         cef_host::go_forward();
         cef_host::focus_content();
+    }
+
+    fn open_browser_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (popup_size, shadow) = browser_menu::popup_metrics();
+        let owner = window.bounds();
+        // The toolbar's menu anchor is fixed at the right inset. GPUI window
+        // bounds and element positions are logical DIPs in global coordinates;
+        // the Windows backend converts this WindowBounds to physical pixels once.
+        let anchor_right = owner.origin.x + owner.size.width - px(12.0);
+        let anchor_top = owner.origin.y + px(64.0);
+        let anchor_bottom = owner.origin.y + px(94.0);
+        let mut origin = gpui::point(anchor_right - popup_size.width + shadow, anchor_bottom);
+
+        if let Some(display) = window.display(cx) {
+            let work = display.visible_bounds();
+            let work_right = work.origin.x + work.size.width;
+            let work_bottom = work.origin.y + work.size.height;
+            if origin.x + popup_size.width > work_right {
+                origin.x = anchor_right - popup_size.width + shadow;
+            }
+            if origin.y + popup_size.height > work_bottom {
+                origin.y = anchor_top - popup_size.height;
+            }
+            origin.x = origin
+                .x
+                .max(work.origin.x)
+                .min(work_right - popup_size.width);
+            origin.y = origin
+                .y
+                .max(work.origin.y)
+                .min(work_bottom - popup_size.height);
+        }
+
+        let selected = self.menu_command.clone();
+        cef_host::focus_chrome();
+        if let Err(error) = cx.open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::new(origin, popup_size))),
+                focus: true,
+                kind: gpui::WindowKind::PopUp,
+                is_movable: false,
+                is_resizable: false,
+                is_minimizable: false,
+                window_background: gpui::WindowBackgroundAppearance::Transparent,
+                window_decorations: Some(WindowDecorations::Client),
+                ..Default::default()
+            },
+            move |window, cx| cx.new(|cx| browser_menu::BrowserMenuView::new(selected, window, cx)),
+        ) {
+            eprintln!("failed to open browser menu: {error:?}");
+        }
+    }
+
+    fn run_browser_menu_command(
+        &mut self,
+        command: browser_menu::BrowserMenuCommand,
+        cx: &mut Context<Self>,
+    ) {
+        use browser_menu::BrowserMenuCommand;
+        match command {
+            BrowserMenuCommand::NewTab => self.new_tab(cx),
+            BrowserMenuCommand::Downloads => self.navigate("miko://#/download-manager", cx),
+            BrowserMenuCommand::Settings => self.navigate("miko://#/settings", cx),
+            BrowserMenuCommand::Exit => {
+                cef_host::close_browser();
+                cx.quit();
+            }
+            _ => {}
+        }
     }
 
     fn reload(&mut self, _cx: &mut Context<Self>) {
@@ -713,7 +803,11 @@ impl Root {
                         }),
                     ),
             )
-            .child(nav_btn("more", "dots", true))
+            .child(
+                nav_btn("more", "dots", true).on_click(
+                    cx.listener(|this, _, window, cx| this.open_browser_menu(window, cx)),
+                ),
+            )
     }
 }
 

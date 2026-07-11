@@ -2,7 +2,7 @@
 //! browser parented as an X11 child of the GPUI window.
 
 use cef::{args::Args, *};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{
     Arc, Mutex, OnceLock,
@@ -70,6 +70,10 @@ struct Shared {
     /// Tabs whose create call was issued, awaiting `on_after_created` (FIFO so we
     /// can correlate the created browser back to the requesting tab).
     creating: VecDeque<PendingTab>,
+    /// Tabs closed after create was issued but before `on_after_created`.
+    /// Their FIFO entries must remain so browser identifiers cannot be assigned
+    /// to a later tab; the resulting browser is closed as soon as it arrives.
+    canceled_creating: HashSet<u64>,
     /// Per-tab URL to load once the browser exists (a navigation that arrived
     /// before creation finished).
     pending_nav: HashMap<u64, String>,
@@ -190,6 +194,7 @@ pub fn init(args: &Args) -> Option<Receiver<CefEvent>> {
         active_tab: None,
         to_create: VecDeque::new(),
         creating: VecDeque::new(),
+        canceled_creating: HashSet::new(),
         pending_nav: HashMap::new(),
         parent: None,
         #[cfg(any(target_os = "linux", target_os = "freebsd"))]
@@ -287,9 +292,7 @@ pub fn pump(rx: &Receiver<CefEvent>, out: &mut Vec<CefEvent>) {
 /// Suggested delay until the next `pump` call (from CEF's external pump schedule).
 pub fn next_pump_delay_ms() -> u64 {
     // Clamp so we stay responsive to input even when CEF asks for a long sleep.
-    NEXT_PUMP_DELAY_MS
-        .load(Ordering::Relaxed)
-        .clamp(1, 16) as u64
+    NEXT_PUMP_DELAY_MS.load(Ordering::Relaxed).clamp(1, 16) as u64
 }
 
 static NEXT_PUMP_DELAY_MS: AtomicI64 = AtomicI64::new(10);
@@ -336,7 +339,10 @@ fn push_adblock_statistics(force: bool) {
     {
         return;
     }
-    let browser = shared().lock().ok().and_then(|shared| shared.active_browser());
+    let browser = shared()
+        .lock()
+        .ok()
+        .and_then(|shared| shared.active_browser());
     let Some(frame) = browser.as_ref().and_then(Browser::main_frame) else {
         return;
     };
@@ -406,7 +412,10 @@ pub fn set_parent_bounds(parent_xid: u64, bounds: Rect) {
         if s.parent != Some(parent_xid) || bounds_changed {
             cef_debug!(
                 "[cef] layout parent=0x{parent_xid:x} rect=({},{} {}x{})",
-                bounds.x, bounds.y, bounds.width, bounds.height
+                bounds.x,
+                bounds.y,
+                bounds.width,
+                bounds.height
             );
         }
 
@@ -481,7 +490,9 @@ pub fn close_tab(tab_id: u64) {
     let browser = {
         let Ok(mut s) = shared.lock() else { return };
         s.to_create.retain(|p| p.tab_id != tab_id);
-        s.creating.retain(|p| p.tab_id != tab_id);
+        if s.creating.iter().any(|p| p.tab_id == tab_id) {
+            s.canceled_creating.insert(tab_id);
+        }
         s.pending_nav.remove(&tab_id);
         if s.active_tab == Some(tab_id) {
             s.active_tab = None;
@@ -597,7 +608,11 @@ pub fn send_key_down(event: &gpui::KeyDownEvent) {
     }
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     {
-        send_key_inner(&event.keystroke, KeyPhase::Down, event.prefer_character_input);
+        send_key_inner(
+            &event.keystroke,
+            KeyPhase::Down,
+            event.prefer_character_input,
+        );
     }
 }
 
@@ -852,8 +867,8 @@ fn send_key_inner(keystroke: &gpui::Keystroke, phase: KeyPhase, prefer_character
     };
     // Shortcuts (Ctrl+Backspace, Ctrl+A, …) must not carry a character or Blink
     // treats them as text insertion instead of editing commands.
-    let shortcut = (keystroke.modifiers.control || keystroke.modifiers.platform)
-        && !prefer_character_input;
+    let shortcut =
+        (keystroke.modifiers.control || keystroke.modifiers.platform) && !prefer_character_input;
     let alt_menu =
         keystroke.modifiers.alt && !prefer_character_input && !keystroke.modifiers.control;
     if shortcut || alt_menu {
@@ -1103,9 +1118,14 @@ fn drain_to_create_locked(s: &mut Shared) {
     #[cfg(target_os = "windows")]
     let child_bounds = s.bounds.clone();
 
+    #[cfg(target_os = "windows")]
+    let host_raw = parent.0 as usize;
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    let host_raw = parent as usize;
+
     while let Some(pending) = s.to_create.pop_front() {
         eprintln!(
-            "[cef] create tab={} gpui=0x{parent_raw:x} host=0x{parent:x} rect=({},{} {}x{}) url={}",
+            "[cef] create tab={} gpui=0x{parent_raw:x} host=0x{host_raw:x} rect=({},{} {}x{}) url={}",
             pending.tab_id,
             child_bounds.x,
             child_bounds.y,
@@ -1142,7 +1162,10 @@ fn drain_to_create_locked(s: &mut Shared) {
             None,
         );
         if ok == 0 {
-            eprintln!("[cef] browser_host_create_browser failed (tab={})", pending.tab_id);
+            eprintln!(
+                "[cef] browser_host_create_browser failed (tab={})",
+                pending.tab_id
+            );
             continue;
         }
         s.creating.push_back(pending);
@@ -1168,14 +1191,7 @@ fn ensure_linux_host_window(s: &mut Shared, parent_xid: u64, bounds: &Rect) -> O
 
     if let Some(host) = s.host_xid {
         unsafe {
-            (xlib.XMoveResizeWindow)(
-                display as *mut _,
-                host,
-                bounds.x,
-                bounds.y,
-                width,
-                height,
-            );
+            (xlib.XMoveResizeWindow)(display as *mut _, host, bounds.x, bounds.y, width, height);
             (xlib.XMapRaised)(display as *mut _, host);
             (xlib.XFlush)(display as *mut _);
         }
@@ -1619,9 +1635,8 @@ fn paint_host_window(
     if display.is_null() || width == 0 || height == 0 {
         return;
     }
-    let xlib = OSR_XLIB.get_or_init(|| {
-        x11_dl::xlib::Xlib::open().expect("libX11 required for OSR paint")
-    });
+    let xlib =
+        OSR_XLIB.get_or_init(|| x11_dl::xlib::Xlib::open().expect("libX11 required for OSR paint"));
 
     let mut guard = match OSR_TARGET.lock() {
         Ok(g) => g,
@@ -1747,16 +1762,25 @@ wrap_life_span_handler! {
             let state = shared().lock().ok().and_then(|mut s| {
                 let pending = s.creating.pop_front()?;
                 let tab_id = pending.tab_id;
+                if s.canceled_creating.remove(&tab_id) {
+                    return Some((tab_id, false, s.bounds.clone(), None, s.tx.clone(), true));
+                }
                 s.browsers.insert(tab_id, browser.clone());
                 s.identifier_to_tab.insert(browser.identifier(), tab_id);
                 let is_active = s.active_tab == Some(tab_id);
                 let bounds = s.bounds.clone();
                 let pending_nav = s.pending_nav.remove(&tab_id);
-                Some((tab_id, is_active, bounds, pending_nav, s.tx.clone()))
+                Some((tab_id, is_active, bounds, pending_nav, s.tx.clone(), false))
             });
-            let Some((tab_id, is_active, bounds, pending_nav, tx)) = state else {
+            let Some((tab_id, is_active, bounds, pending_nav, tx, canceled)) = state else {
                 return;
             };
+            if canceled {
+                if let Some(host) = browser.host() {
+                    host.close_browser(1);
+                }
+                return;
+            }
 
             // Never call into CEF while holding SHARED: Win32 callbacks can
             // synchronously re-enter this module and emit an event.

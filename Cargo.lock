@@ -6467,6 +6467,7 @@ dependencies = [
  "gpui_platform",
  "libc",
  "raw-window-handle",
+ "sys-locale",
  "trash_adblock",
  "unicode-segmentation",
  "x11-dl",

@@ -6,9 +6,9 @@ use std::ops::Range;
 use gpui::{
     App, Bounds, ClipboardItem, ContentMask, Context, CursorStyle, Element, ElementId,
     ElementInputHandler, Entity, EntityInputHandler, EventEmitter, FocusHandle, Focusable,
-    GlobalElementId, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad,
-    Pixels, Point, SharedString, ShapedLine, Style, TextRun, UTF16Selection, UnderlineStyle, Window,
-    actions, div, fill, point, prelude::*, px, relative, rgb, rgba, size,
+    GlobalElementId, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    PaintQuad, Pixels, Point, ShapedLine, SharedString, Style, TextRun, UTF16Selection,
+    UnderlineStyle, Window, actions, div, fill, point, prelude::*, px, relative, rgb, rgba, size,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -461,7 +461,8 @@ impl EntityInputHandler for Omnibox {
             .unwrap_or(self.selected_range.clone());
 
         self.content =
-            (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..]).into();
+            (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
+                .into();
         self.selected_range = range.start + new_text.len()..range.start + new_text.len();
         self.marked_range.take();
         cx.notify();
@@ -482,7 +483,8 @@ impl EntityInputHandler for Omnibox {
             .unwrap_or(self.selected_range.clone());
 
         self.content =
-            (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..]).into();
+            (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
+                .into();
         if !new_text.is_empty() {
             self.marked_range = Some(range.start..range.start + new_text.len());
         } else {
@@ -761,9 +763,7 @@ impl Render for Omnibox {
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_move(cx.listener(Self::on_mouse_move))
-            .child(TextElement {
-                input: cx.entity(),
-            })
+            .child(TextElement { input: cx.entity() })
     }
 }
 
