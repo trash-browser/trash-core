@@ -42,11 +42,18 @@ priority = 0
 [workspace.dependencies]
 accesskit = "0.24"
 accesskit_macos = "0.19"
-accesskit_unix = "0.17"
+accesskit_unix = "0.21"
 accesskit_windows = "0.33"
 anyhow = "1.0.86"
 async-channel = "2.3"
-ashpd = { version = "0.11", default-features = false, features = ["async-std"] }
+ashpd = { version = "0.13", default-features = false, features = [
+    "async-io",
+    "notification",
+    "open_uri",
+    "file_chooser",
+    "settings",
+    "trash",
+] }
 backtrace = "0.3"
 bitflags = "2"
 chrono = { version = "0.4", features = ["serde"] }
