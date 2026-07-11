@@ -910,14 +910,14 @@
     "settings": "การตั้งค่า"
   },
   "ntp": {
-    "tagline": "ค้นหาเว็บหรือเปิดทางลัด",
-    "searchPlaceholder": "ค้นหาหรือป้อนชื่อเว็บไซต์",
-    "addShortcut": "เพิ่มทางลัด",
+    "tagline": "",
+    "searchPlaceholder": "ค้นหาหรือพิมพ์ URL",
+    "addShortcut": "เพิ่ม",
     "protection": {
-      "blocked": "คำขอที่บล็อกแล้ว",
-      "active": "ระบบป้องกันทำงาน · โหลด {{count}} รายการ",
-      "loading": "กำลังโหลดรายการป้องกัน…",
-      "error": "โหลดรายการป้องกันไม่ได้"
+      "blocked": "บล็อกแล้ว",
+      "active": "{{count}} รายการ",
+      "loading": "กำลังโหลดรายการ…",
+      "error": "โหลดรายการไม่ได้"
     },
     "shortcuts": {
       "apple": "Apple",

@@ -1,10 +1,8 @@
 import { useTranslation } from "react-i18next";
-import { motion } from "framer-motion";
 import { SettingRowView } from "./SettingRowView";
 import { LanguageSwitcher } from "./LanguageSwitcher";
 import { AboutPanel } from "./AboutPanel";
 import type { NavId, SettingSection } from "../data/settings";
-import { listContainerVariants, listItemVariants } from "../motion";
 
 type Props = {
   page: NavId;
@@ -17,46 +15,28 @@ export function SettingsContent({ page, sections, onToggle }: Props) {
   const heading = sections[0];
 
   return (
-    <div className="mx-auto w-full max-w-[680px] px-6 py-8">
+    <div className="mx-auto w-full max-w-[640px] px-7 py-8">
       {heading ? (
-        <motion.header
-          className="mb-6"
-          initial={{ opacity: 0, y: 8 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
-        >
-          <h1 className="text-[28px] font-normal tracking-tight text-shell-text">
-            {t(heading.titleKey)}
-          </h1>
+        <header className="mb-6">
+          <h1 className="page-title">{t(heading.titleKey)}</h1>
           {heading.descriptionKey ? (
-            <p className="mt-2 max-w-[540px] text-sm leading-5 text-shell-muted">
-              {t(heading.descriptionKey)}
-            </p>
+            <p className="page-sub max-w-[480px]">{t(heading.descriptionKey)}</p>
           ) : null}
-        </motion.header>
+        </header>
       ) : null}
 
-      <motion.div
-        className="flex flex-col gap-4"
-        variants={listContainerVariants}
-        initial="initial"
-        animate="animate"
-      >
+      <div className="flex flex-col gap-3.5">
         {page === "languages" ? <LanguageSwitcher /> : null}
         {page === "about" ? <AboutPanel /> : null}
 
         {sections.map((section) => (
-          <motion.section
-            key={section.id}
-            variants={listItemVariants}
-            className="overflow-hidden rounded-xl border border-shell-border/80 bg-shell-elevated"
-          >
+          <section key={section.id} className="panel">
             {section.id !== heading?.id ? (
-              <div className="border-b border-shell-border/80 px-5 py-3 text-sm text-shell-text">
+              <div className="border-b border-shell-border/50 px-5 py-3 text-[13px] font-medium tracking-[-0.01em] text-shell-text">
                 {t(section.titleKey)}
               </div>
             ) : null}
-            <div className="divide-y divide-shell-border/70">
+            <div className="divide-y divide-shell-border/50">
               {section.rows.map((row) => (
                 <SettingRowView
                   key={row.id}
@@ -66,9 +46,9 @@ export function SettingsContent({ page, sections, onToggle }: Props) {
                 />
               ))}
             </div>
-          </motion.section>
+          </section>
         ))}
-      </motion.div>
+      </div>
     </div>
   );
 }

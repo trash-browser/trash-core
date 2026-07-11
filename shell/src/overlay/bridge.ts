@@ -1,13 +1,11 @@
 /**
- * Bridge for CEF / Rust host.
+ * Bridge for CEF / Rust host overlay actions.
  *
- * Example (Rust/CEF):
- *   load_url("http://localhost:5173/#/overlay/permission?type=camera&origin=https://site.com")
- *   bind `trashCef.onOverlayAction(json)`
- *
- * Message shape:
- *   { source: "trash-overlay", type, overlay, payload? }
+ * Prefers `window.trashCef` (injected by the native host). Falls back to
+ * postMessage / CustomEvent for iframe or Vite-only embeds.
  */
+
+import { send } from "../native/ipc";
 
 export type OverlayAction =
   | "close"
@@ -27,17 +25,6 @@ export type OverlayMessage = {
   payload?: Record<string, unknown>;
 };
 
-declare global {
-  interface Window {
-    trashOverlay?: {
-      post: (msg: OverlayMessage) => void;
-    };
-    trashCef?: {
-      onOverlayAction?: (json: string) => void;
-    };
-  }
-}
-
 export function postOverlayAction(
   overlay: string,
   type: OverlayAction,
@@ -50,8 +37,14 @@ export function postOverlayAction(
     payload,
   };
 
+  // Preferred: native IPC (trashCef / miko://shell/ipc).
+  if (window.trashCef?.onOverlayAction) {
+    window.trashCef.onOverlayAction(msg);
+  } else {
+    send("overlay.action", msg);
+  }
+
   window.trashOverlay?.post(msg);
-  window.trashCef?.onOverlayAction?.(JSON.stringify(msg));
   window.parent?.postMessage(msg, "*");
   window.dispatchEvent(new CustomEvent("trash-overlay", { detail: msg }));
 }

@@ -151,7 +151,7 @@ pub fn model() -> MenuModel {
                     action("zoom-in", l[7], Some("Ctrl++"), true),
                 ],
             },
-            action("print", l[8], Some("Ctrl+P"), false),
+            action("print", l[8], Some("Ctrl+P"), true),
             action("lens", l[9], None, false),
             MenuItem::Submenu {
                 label: l[10].into(),
@@ -248,6 +248,14 @@ impl BrowserMenuView {
         window.focus(&focus, cx);
         cx.on_blur(&focus, window, |_this, window, _cx| {
             window.remove_window();
+        })
+        .detach();
+        // PopUp windows on Linux often keep logical focus when clicking the
+        // owner; also dismiss when the popup is deactivated.
+        cx.observe_window_activation(window, |_, window, _cx| {
+            if !window.is_window_active() {
+                window.remove_window();
+            }
         })
         .detach();
         Self {

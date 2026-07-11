@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{
     Arc, Mutex, OnceLock,
-    atomic::{AtomicI64, AtomicU64, Ordering},
+    atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering},
 };
 use trash_adblock::{
     AdBlockAdapter, AdBlockDecision, AdBlockService, AdBlockServiceBuilder, AdapterRequest,
@@ -49,6 +49,19 @@ pub enum CefEvent {
     },
     /// The CEF content browser took keyboard focus (e.g. user clicked the page).
     ContentFocus,
+    /// Shell overlay / IPC action forwarded from `miko://shell/ipc`.
+    ShellOverlay {
+        action: String,
+        overlay: String,
+        payload: serde_json::Value,
+    },
+    /// Page right-click menu intercepted for a dismissible GPUI popup (Linux OSR).
+    PageContextMenu {
+        /// View coordinates in device pixels (CEF OSR space).
+        x: i32,
+        y: i32,
+        entries: Vec<crate::context_menu::ContextMenuEntry>,
+    },
 }
 
 /// A tab whose CEF browser has not been created yet.
@@ -525,6 +538,42 @@ pub fn navigate(url: &str) {
     if let Some(frame) = frame {
         frame.load_url(Some(&CefString::from(url)));
     }
+}
+
+/// Latest ad-block statistics as JSON (for shell IPC `getAdblockStats`).
+pub fn current_adblock_statistics_json() -> Result<serde_json::Value, String> {
+    let runtime = ADBLOCK
+        .get()
+        .ok_or_else(|| "adblock runtime not ready".to_string())?;
+    let snapshot = runtime
+        .recorder
+        .lock()
+        .ok()
+        .and_then(|recorder| recorder.as_ref().map(|r| r.latest().1))
+        .unwrap_or_else(|| runtime.fallback_statistics.clone());
+    serde_json::to_value(snapshot).map_err(|err| err.to_string())
+}
+
+/// Latest filter-list status as JSON (for shell IPC `getAdblockStatus`).
+pub fn current_adblock_filter_status_json() -> Result<serde_json::Value, String> {
+    let runtime = ADBLOCK
+        .get()
+        .ok_or_else(|| "adblock runtime not ready".to_string())?;
+    let status = runtime
+        .filter_updater
+        .lock()
+        .map(|updater| updater.latest().1)
+        .unwrap_or_else(|_| FilterListStatus::unavailable("filter updater lock poisoned"));
+    serde_json::to_value(status).map_err(|err| err.to_string())
+}
+
+/// Forward a shell overlay action into the GPUI event stream.
+pub fn emit_shell_overlay(action: String, overlay: String, payload: serde_json::Value) {
+    emit(CefEvent::ShellOverlay {
+        action,
+        overlay,
+        payload,
+    });
 }
 
 /// Pull Win32 keyboard focus back to the GPUI chrome window. The CEF content
@@ -1037,11 +1086,100 @@ pub fn reload() {
     }
 }
 
+pub fn reload_ignore_cache() {
+    let browser = shared().lock().ok().and_then(|s| s.active_browser());
+    if let Some(browser) = browser {
+        browser.reload_ignore_cache();
+    }
+}
+
 pub fn stop_load() {
     let browser = shared().lock().ok().and_then(|s| s.active_browser());
     if let Some(browser) = browser {
         browser.stop_load();
     }
+}
+
+pub fn print_page() {
+    let host = shared()
+        .lock()
+        .ok()
+        .and_then(|s| s.active_browser())
+        .and_then(|b| b.host());
+    if let Some(host) = host {
+        host.print();
+    }
+}
+
+/// Chrome-like discrete zoom steps (always includes 100%).
+const ZOOM_PRESETS: &[i32] = &[
+    25, 33, 50, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200, 250, 300, 400, 500,
+];
+
+pub fn zoom_in_step() {
+    zoom_step(1);
+}
+
+pub fn zoom_out_step() {
+    zoom_step(-1);
+}
+
+fn zoom_step(direction: i32) {
+    let current = zoom_percent();
+    let next = if direction > 0 {
+        ZOOM_PRESETS
+            .iter()
+            .copied()
+            .find(|&p| p > current)
+            .unwrap_or(*ZOOM_PRESETS.last().unwrap())
+    } else {
+        ZOOM_PRESETS
+            .iter()
+            .rev()
+            .copied()
+            .find(|&p| p < current)
+            .unwrap_or(*ZOOM_PRESETS.first().unwrap())
+    };
+    set_zoom_percent(next);
+}
+
+fn set_zoom_percent(percent: i32) {
+    let host = shared()
+        .lock()
+        .ok()
+        .and_then(|s| s.active_browser())
+        .and_then(|b| b.host());
+    let Some(host) = host else {
+        return;
+    };
+    let factor = (percent as f64 / 100.0).max(0.01);
+    let level = (factor.ln() / 1.2_f64.ln()).clamp(-8.0, 8.0);
+    host.set_zoom_level(level);
+}
+
+pub fn zoom_reset() {
+    set_zoom_percent(100);
+}
+
+/// Chromium zoom factor as a percentage (100 = default).
+pub fn zoom_percent() -> i32 {
+    let host = shared()
+        .lock()
+        .ok()
+        .and_then(|s| s.active_browser())
+        .and_then(|b| b.host());
+    let Some(host) = host else {
+        return 100;
+    };
+    let factor = 1.2_f64.powf(host.zoom_level());
+    let raw = (factor * 100.0).round().clamp(25.0, 500.0) as i32;
+    // Prefer an exact preset label when we're within half a percent of one.
+    ZOOM_PRESETS
+        .iter()
+        .copied()
+        .min_by_key(|p| (p - raw).abs())
+        .filter(|p| (p - raw).abs() <= 1)
+        .unwrap_or(raw)
 }
 
 pub fn start_uri() -> String {
@@ -1402,11 +1540,21 @@ wrap_scheme_handler_factory! {
             _scheme_name: Option<&CefString>,
             request: Option<&mut Request>,
         ) -> Option<ResourceHandler> {
-            let url = CefString::from(&request?.url()).to_string();
-            eprintln!("[cef] scheme-request url={url}");
+            let request = request?;
+            let url = CefString::from(&request.url()).to_string();
+            cef_debug!("[cef] scheme-request url={url}");
             if !url.starts_with("miko://shell/") {
                 return None;
             }
+
+            if crate::shell_ipc::is_ipc_url(&url) {
+                let body = crate::shell_ipc::handle_scheme_request(request);
+                return Some(OwnedBytesResourceHandler::create(
+                    "application/json".to_string(),
+                    body,
+                ));
+            }
+
             let stream = stream_reader_create_for_data(
                 SHELL_HTML.as_ptr() as *mut u8,
                 SHELL_HTML.len(),
@@ -1418,6 +1566,80 @@ wrap_scheme_handler_factory! {
                 stream,
             ))
         }
+    }
+}
+
+wrap_resource_handler! {
+    struct OwnedBytesResourceHandler {
+        mime_type: String,
+        body: Arc<Vec<u8>>,
+        offset: Arc<AtomicUsize>,
+    }
+
+    impl ResourceHandler {
+        fn open(
+            &self,
+            _request: Option<&mut Request>,
+            handle_request: Option<&mut i32>,
+            _callback: Option<&mut Callback>,
+        ) -> i32 {
+            if let Some(handle_request) = handle_request {
+                *handle_request = 1;
+            }
+            1
+        }
+
+        fn response_headers(
+            &self,
+            response: Option<&mut Response>,
+            response_length: Option<&mut i64>,
+            _redirect_url: Option<&mut CefString>,
+        ) {
+            let Some(response) = response else {
+                return;
+            };
+            response.set_status(200);
+            response.set_status_text(Some(&CefString::from("OK")));
+            response.set_mime_type(Some(&CefString::from(self.mime_type.as_str())));
+            if let Some(response_length) = response_length {
+                *response_length = self.body.len() as i64;
+            }
+        }
+
+        fn read(
+            &self,
+            data_out: *mut u8,
+            bytes_to_read: i32,
+            bytes_read: Option<&mut i32>,
+            _callback: Option<&mut ResourceReadCallback>,
+        ) -> i32 {
+            let Some(bytes_read) = bytes_read else {
+                return 0;
+            };
+            if bytes_to_read <= 0 || data_out.is_null() {
+                *bytes_read = 0;
+                return 0;
+            }
+            let offset = self.offset.load(Ordering::Relaxed);
+            if offset >= self.body.len() {
+                *bytes_read = 0;
+                return 0;
+            }
+            let remaining = self.body.len() - offset;
+            let n = remaining.min(bytes_to_read as usize);
+            unsafe {
+                std::ptr::copy_nonoverlapping(self.body.as_ptr().add(offset), data_out, n);
+            }
+            self.offset.store(offset + n, Ordering::Relaxed);
+            *bytes_read = n as i32;
+            1
+        }
+    }
+}
+
+impl OwnedBytesResourceHandler {
+    fn create(mime_type: String, body: Vec<u8>) -> ResourceHandler {
+        Self::new(mime_type, Arc::new(body), Arc::new(AtomicUsize::new(0)))
     }
 }
 
@@ -1514,6 +1736,9 @@ wrap_client! {
         }
         fn focus_handler(&self) -> Option<FocusHandler> {
             Some(ContentFocusHandler::new())
+        }
+        fn context_menu_handler(&self) -> Option<ContextMenuHandler> {
+            Some(ContentContextMenu::new())
         }
         fn render_handler(&self) -> Option<RenderHandler> {
             linux_render_handler()
@@ -1905,6 +2130,9 @@ wrap_load_handler! {
                     .unwrap_or_default(),
             );
             if should_push_statistics {
+                if let Some(frame) = frame.as_ref() {
+                    crate::shell_ipc::inject_bridge(frame);
+                }
                 push_adblock_statistics(true);
             }
             // After navigation, re-assert CEF focus if the page still owns input
@@ -2348,6 +2576,265 @@ fn map_cef_resource_type(resource_type: cef::ResourceType) -> AdBlockResourceTyp
         cef::ResourceType::SERVICE_WORKER => AdBlockResourceType::ServiceWorker,
         cef::ResourceType::CSP_REPORT => AdBlockResourceType::CspReport,
         _ => AdBlockResourceType::Other,
+    }
+}
+
+static PENDING_CONTEXT_MENU: Mutex<Option<RunContextMenuCallback>> = Mutex::new(None);
+
+/// Device-pixel origin of the CEF content view within the GPUI window.
+pub fn content_device_origin() -> (i32, i32) {
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    {
+        CACHED_BOUNDS
+            .lock()
+            .ok()
+            .map(|b| (b.x, b.y))
+            .or_else(|| shared().lock().ok().map(|s| (s.bounds.x, s.bounds.y)))
+            .unwrap_or((0, 0))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+    {
+        shared()
+            .lock()
+            .ok()
+            .map(|s| (s.bounds.x, s.bounds.y))
+            .unwrap_or((0, 0))
+    }
+}
+
+/// Complete or cancel the pending CEF context-menu callback from the GPUI popup.
+pub fn finish_context_menu(command_id: Option<i32>) {
+    let callback = PENDING_CONTEXT_MENU
+        .lock()
+        .ok()
+        .and_then(|mut slot| slot.take());
+    // Execute ourselves — `callback.cont` is unreliable after we take over the
+    // menu under OSR (CEF may already have dismissed the custom-menu state).
+    if let Some(id) = command_id {
+        execute_context_command(id);
+    }
+    if let Some(callback) = callback {
+        callback.cancel();
+    }
+}
+
+fn menu_id_matches(command_id: i32, id: MenuId) -> bool {
+    command_id == id.get_raw() as i32
+}
+
+fn execute_context_command(command_id: i32) {
+    let browser = shared().lock().ok().and_then(|s| s.active_browser());
+    let Some(browser) = browser else {
+        return;
+    };
+    let frame = browser.main_frame();
+    let host = browser.host();
+
+    if menu_id_matches(command_id, MenuId::BACK) {
+        browser.go_back();
+        return;
+    }
+    if menu_id_matches(command_id, MenuId::FORWARD) {
+        browser.go_forward();
+        return;
+    }
+    if menu_id_matches(command_id, MenuId::RELOAD) {
+        browser.reload();
+        return;
+    }
+    if menu_id_matches(command_id, MenuId::RELOAD_NOCACHE) {
+        browser.reload_ignore_cache();
+        return;
+    }
+    if menu_id_matches(command_id, MenuId::STOPLOAD) {
+        browser.stop_load();
+        return;
+    }
+    if menu_id_matches(command_id, MenuId::PRINT) {
+        if let Some(host) = host {
+            host.print();
+        }
+        return;
+    }
+
+    let Some(frame) = frame else {
+        return;
+    };
+    if menu_id_matches(command_id, MenuId::UNDO) {
+        frame.undo();
+    } else if menu_id_matches(command_id, MenuId::REDO) {
+        frame.redo();
+    } else if menu_id_matches(command_id, MenuId::CUT) {
+        frame.cut();
+    } else if menu_id_matches(command_id, MenuId::COPY) {
+        frame.copy();
+    } else if menu_id_matches(command_id, MenuId::PASTE)
+        || menu_id_matches(command_id, MenuId::PASTE_MATCH_STYLE)
+    {
+        frame.paste();
+    } else if menu_id_matches(command_id, MenuId::DELETE) {
+        frame.del();
+    } else if menu_id_matches(command_id, MenuId::SELECT_ALL) {
+        frame.select_all();
+    } else if menu_id_matches(command_id, MenuId::VIEW_SOURCE) {
+        frame.view_source();
+    } else {
+        // Unknown / custom command — try CEF continue path was already skipped;
+        // best-effort: no-op with a debug breadcrumb.
+        cef_debug!("[cef] unhandled context menu command id={command_id}");
+    }
+}
+
+fn strip_menu_mnemonic(label: &str) -> String {
+    // CEF/Windows labels use `&X` for mnemonics and `&&` for a literal '&'.
+    let mut out = String::with_capacity(label.len());
+    let mut chars = label.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '&' {
+            match chars.peek() {
+                Some('&') => {
+                    out.push('&');
+                    chars.next();
+                }
+                Some(_) => {
+                    // Skip mnemonic marker; keep the following character.
+                }
+                None => out.push('&'),
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+fn take_context_menu_entries(model: &MenuModel) -> Vec<crate::context_menu::ContextMenuEntry> {
+    let mut entries = Vec::new();
+    for index in 0..model.count() {
+        if model.is_visible_at(index) == 0 {
+            continue;
+        }
+        let item_type = model.type_at(index);
+        if item_type == MenuItemType::SEPARATOR {
+            if entries
+                .last()
+                .is_some_and(|e: &crate::context_menu::ContextMenuEntry| !e.separator)
+            {
+                entries.push(crate::context_menu::ContextMenuEntry {
+                    command_id: -1,
+                    label: String::new(),
+                    enabled: false,
+                    separator: true,
+                });
+            }
+            continue;
+        }
+        if item_type == MenuItemType::SUBMENU {
+            continue;
+        }
+        let raw = CefString::from(&model.label_at(index)).to_string();
+        let label = strip_menu_mnemonic(&raw);
+        if label.is_empty() {
+            continue;
+        }
+        entries.push(crate::context_menu::ContextMenuEntry {
+            command_id: model.command_id_at(index),
+            label,
+            enabled: model.is_enabled_at(index) != 0,
+            separator: false,
+        });
+    }
+    while entries.last().is_some_and(|e| e.separator) {
+        entries.pop();
+    }
+    entries
+}
+
+wrap_context_menu_handler! {
+    struct ContentContextMenu;
+
+    impl ContextMenuHandler {
+        fn on_before_context_menu(
+            &self,
+            browser: Option<&mut Browser>,
+            _frame: Option<&mut Frame>,
+            _params: Option<&mut ContextMenuParams>,
+            model: Option<&mut MenuModel>,
+        ) {
+            let Some(model) = model else {
+                return;
+            };
+            // Ensure navigation actions reflect live browser state.
+            if let Some(browser) = browser.as_deref() {
+                let _ = model.set_enabled(
+                    MenuId::BACK.get_raw() as i32,
+                    i32::from(browser.can_go_back() != 0),
+                );
+                let _ = model.set_enabled(
+                    MenuId::FORWARD.get_raw() as i32,
+                    i32::from(browser.can_go_forward() != 0),
+                );
+            }
+        }
+
+        fn run_context_menu(
+            &self,
+            _browser: Option<&mut Browser>,
+            _frame: Option<&mut Frame>,
+            params: Option<&mut ContextMenuParams>,
+            model: Option<&mut MenuModel>,
+            callback: Option<&mut RunContextMenuCallback>,
+        ) -> i32 {
+            // Linux OSR: CEF's native menu cannot dismiss (OS focus stays on
+            // chrome). Handle it ourselves with a GPUI popup.
+            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+            {
+                let Some(model) = model.as_deref() else {
+                    if let Some(callback) = callback {
+                        callback.cancel();
+                    }
+                    return 1;
+                };
+                let entries = take_context_menu_entries(model);
+                let (x, y) = params
+                    .as_deref()
+                    .map(|p| (p.xcoord(), p.ycoord()))
+                    .unwrap_or((0, 0));
+                if entries.is_empty() {
+                    if let Some(callback) = callback {
+                        callback.cancel();
+                    }
+                    return 1;
+                }
+                if let Ok(mut slot) = PENDING_CONTEXT_MENU.lock() {
+                    if let Some(previous) = slot.take() {
+                        previous.cancel();
+                    }
+                    if let Some(callback) = callback {
+                        *slot = Some(callback.clone());
+                    }
+                } else if let Some(callback) = callback {
+                    callback.cancel();
+                    return 1;
+                }
+                emit(CefEvent::PageContextMenu { x, y, entries });
+                return 1;
+            }
+            #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+            {
+                let _ = (params, model, callback);
+                0
+            }
+        }
+
+        fn on_context_menu_dismissed(
+            &self,
+            _browser: Option<&mut Browser>,
+            _frame: Option<&mut Frame>,
+        ) {
+            // Keep PENDING_CONTEXT_MENU until finish_context_menu runs — CEF may
+            // fire dismissed when focus leaves the browser during our GPUI popup.
+        }
     }
 }
 

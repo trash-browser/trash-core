@@ -7,14 +7,14 @@ export type Shortcut = {
 };
 
 export const NTP_SHORTCUTS: Shortcut[] = [
-  { id: "apple", labelKey: "ntp.shortcuts.apple", url: "https://www.apple.com", letter: "A", tint: "#3c4043" },
-  { id: "wiki", labelKey: "ntp.shortcuts.wiki", url: "https://www.wikipedia.org", letter: "W", tint: "#3c4043" },
-  { id: "github", labelKey: "ntp.shortcuts.github", url: "https://github.com", letter: "G", tint: "#3c4043" },
-  { id: "bing", labelKey: "ntp.shortcuts.bing", url: "https://www.bing.com", letter: "B", tint: "#3c4043" },
-  { id: "youtube", labelKey: "ntp.shortcuts.youtube", url: "https://www.youtube.com", letter: "Y", tint: "#3c4043" },
-  { id: "mail", labelKey: "ntp.shortcuts.mail", url: "https://mail.google.com", letter: "M", tint: "#3c4043" },
-  { id: "maps", labelKey: "ntp.shortcuts.maps", url: "https://maps.google.com", letter: "P", tint: "#3c4043" },
-  { id: "news", labelKey: "ntp.shortcuts.news", url: "https://news.google.com", letter: "N", tint: "#3c4043" },
+  { id: "apple", labelKey: "ntp.shortcuts.apple", url: "https://www.apple.com", letter: "A", tint: "#2a2a2e" },
+  { id: "wiki", labelKey: "ntp.shortcuts.wiki", url: "https://www.wikipedia.org", letter: "W", tint: "#2c3036" },
+  { id: "github", labelKey: "ntp.shortcuts.github", url: "https://github.com", letter: "G", tint: "#252a30" },
+  { id: "bing", labelKey: "ntp.shortcuts.bing", url: "https://www.bing.com", letter: "B", tint: "#243038" },
+  { id: "youtube", labelKey: "ntp.shortcuts.youtube", url: "https://www.youtube.com", letter: "Y", tint: "#342626" },
+  { id: "mail", labelKey: "ntp.shortcuts.mail", url: "https://mail.google.com", letter: "M", tint: "#2c2832" },
+  { id: "maps", labelKey: "ntp.shortcuts.maps", url: "https://maps.google.com", letter: "P", tint: "#24322c" },
+  { id: "news", labelKey: "ntp.shortcuts.news", url: "https://news.google.com", letter: "N", tint: "#322c24" },
 ];
 
 export type DownloadItem = {

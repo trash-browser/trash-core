@@ -39,14 +39,16 @@ export function LanguageSwitcher({ variant = "card" }: Props) {
   }
 
   return (
-    <section className="overflow-hidden rounded-xl border border-shell-border/80 bg-shell-elevated">
-      <div className="border-b border-shell-border/80 px-5 py-3">
-        <div className="text-sm text-shell-text">{t("shell.language")}</div>
+    <section className="panel">
+      <div className="border-b border-shell-border/50 px-5 py-3">
+        <div className="text-[13px] font-medium tracking-[-0.01em] text-shell-text">
+          {t("shell.language")}
+        </div>
         <div className="mt-0.5 text-xs text-shell-muted">
           {t("pages.languages.preferred.pickerHint")}
         </div>
       </div>
-      <div className="divide-y divide-shell-border/70">
+      <div className="divide-y divide-shell-border/50">
         {LOCALES.map((locale) => {
           const active = current === locale.code;
           return (
@@ -59,9 +61,7 @@ export function LanguageSwitcher({ variant = "card" }: Props) {
               <span
                 className={[
                   "flex size-4 shrink-0 items-center justify-center rounded-full border",
-                  active
-                    ? "border-shell-accent"
-                    : "border-shell-track",
+                  active ? "border-shell-accent" : "border-shell-track",
                 ].join(" ")}
               >
                 {active ? (
@@ -69,7 +69,7 @@ export function LanguageSwitcher({ variant = "card" }: Props) {
                 ) : null}
               </span>
               <span className="min-w-0 flex-1">
-                <span className="block text-[13px] text-shell-text">
+                <span className="block text-[13px] tracking-[-0.01em] text-shell-text">
                   {t(locale.labelKey)}
                 </span>
                 <span className="block text-xs text-shell-muted">

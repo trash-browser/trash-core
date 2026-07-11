@@ -57,45 +57,41 @@ export function DownloadManagerPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-y-auto bg-shell">
-      <div className="mx-auto w-full max-w-[860px] px-6 py-8">
-        <header className="mb-6 flex flex-wrap items-end justify-between gap-4">
+      <div className="mx-auto w-full max-w-[720px] px-7 py-8">
+        <header className="mb-6 flex flex-wrap items-end justify-between gap-3">
           <div>
-            <h1 className="text-[28px] font-normal tracking-tight text-shell-text">
-              {t("downloadsMgr.title")}
-            </h1>
-            <p className="mt-1 text-sm text-shell-muted">
-              {t("downloadsMgr.subtitle")}
-            </p>
+            <h1 className="page-title">{t("downloadsMgr.title")}</h1>
+            <p className="page-sub">{t("downloadsMgr.subtitle")}</p>
           </div>
           <button
             type="button"
             onClick={clearCompleted}
-            className="rounded-full px-3 py-1.5 text-[13px] text-shell-accent hover:bg-shell-accent-dim"
+            className="rounded-xl px-3 py-1.5 text-[12px] text-shell-muted hover:bg-shell-hover hover:text-shell-text"
           >
             {t("downloadsMgr.clearCompleted")}
           </button>
         </header>
 
-        <label className="mb-4 flex h-10 items-center gap-3 rounded-full border border-shell-border bg-shell-elevated px-4 focus-within:border-shell-accent">
-          <IconSearch size={16} stroke={1.6} className="text-shell-muted" />
+        <label className="mb-3.5 flex h-10 items-center gap-2.5 rounded-xl border border-shell-border/80 bg-shell-elevated px-3.5 transition-[border-color] focus-within:border-shell-accent/60">
+          <IconSearch size={15} stroke={1.5} className="text-shell-muted" />
           <input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder={t("downloadsMgr.search")}
-            className="h-full w-full bg-transparent text-[13px] text-shell-text outline-none placeholder:text-shell-muted"
+            className="h-full w-full bg-transparent text-[13px] tracking-[-0.01em] text-shell-text outline-none placeholder:text-shell-muted"
           />
         </label>
 
-        <div className="mb-4 flex flex-wrap gap-1">
+        <div className="mb-3.5 flex flex-wrap gap-1">
           {filters.map((f) => (
             <button
               key={f.id}
               type="button"
               onClick={() => setFilter(f.id)}
               className={[
-                "rounded-full px-3 py-1.5 text-[12px] transition-colors",
+                "rounded-xl px-3 py-1.5 text-[12px] transition-colors",
                 filter === f.id
-                  ? "bg-shell-accent-dim text-shell-accent"
+                  ? "bg-shell-active text-shell-text"
                   : "text-shell-muted hover:bg-shell-hover hover:text-shell-text",
               ].join(" ")}
             >
@@ -104,23 +100,23 @@ export function DownloadManagerPage() {
           ))}
         </div>
 
-        <section className="overflow-hidden rounded-xl border border-shell-border/80 bg-shell-elevated">
+        <section className="panel">
           {filtered.length === 0 ? (
-            <div className="px-5 py-16 text-center text-sm text-shell-muted">
+            <div className="px-5 py-16 text-center text-[13px] text-shell-muted">
               {t("downloadsMgr.empty")}
             </div>
           ) : (
-            <ul className="divide-y divide-shell-border/70">
+            <ul className="divide-y divide-shell-border/50">
               {filtered.map((item) => (
-                <li key={item.id} className="flex items-start gap-4 px-5 py-4">
-                  <div className="mt-0.5 flex size-10 shrink-0 items-center justify-center rounded-lg bg-shell-hover text-shell-accent">
-                    <IconFolder size={18} stroke={1.6} />
+                <li key={item.id} className="flex items-start gap-3.5 px-5 py-4">
+                  <div className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-xl bg-shell-hover text-shell-muted">
+                    <IconFolder size={16} stroke={1.5} />
                   </div>
                   <div className="min-w-0 flex-1">
-                    <div className="truncate text-[13px] text-shell-text">
+                    <div className="truncate text-[13px] tracking-[-0.01em] text-shell-text">
                       {item.name}
                     </div>
-                    <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-shell-muted">
+                    <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-shell-muted">
                       <StatusBadge item={item} />
                       <span>·</span>
                       <span>{item.size}</span>
@@ -130,9 +126,9 @@ export function DownloadManagerPage() {
                       <span>{t(item.timeKey)}</span>
                     </div>
                     {item.progress != null && item.status !== "complete" ? (
-                      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-shell-track/50">
+                      <div className="mt-2.5 h-1.5 overflow-hidden rounded-full bg-shell-track/35">
                         <div
-                          className="h-full rounded-full bg-shell-accent"
+                          className="h-full rounded-full bg-shell-accent/85"
                           style={{ width: `${item.progress}%` }}
                         />
                       </div>
@@ -141,11 +137,11 @@ export function DownloadManagerPage() {
                       {item.path}
                     </div>
                   </div>
-                  <div className="flex shrink-0 items-center gap-1">
+                  <div className="flex shrink-0 items-center gap-0.5">
                     {item.status === "paused" || item.status === "failed" ? (
                       <button
                         type="button"
-                        className="rounded-full p-1.5 text-shell-muted hover:bg-shell-hover hover:text-shell-text"
+                        className="rounded-xl p-1.5 text-shell-muted hover:bg-shell-hover hover:text-shell-text"
                         aria-label={t("downloadsMgr.actions.resume")}
                         onClick={() =>
                           setItems((prev) =>
@@ -157,19 +153,19 @@ export function DownloadManagerPage() {
                           )
                         }
                       >
-                        <IconPlayerPlay size={16} stroke={1.6} />
+                        <IconPlayerPlay size={15} stroke={1.5} />
                       </button>
                     ) : null}
                     <button
                       type="button"
-                      className="rounded-full p-1.5 text-shell-muted hover:bg-shell-hover hover:text-shell-danger"
+                      className="rounded-xl p-1.5 text-shell-muted hover:bg-shell-hover hover:text-shell-danger"
                       aria-label={t("downloadsMgr.actions.remove")}
                       onClick={() => remove(item.id)}
                     >
                       {item.status === "complete" ? (
-                        <IconTrash size={16} stroke={1.6} />
+                        <IconTrash size={15} stroke={1.5} />
                       ) : (
-                        <IconX size={16} stroke={1.6} />
+                        <IconX size={15} stroke={1.5} />
                       )}
                     </button>
                   </div>

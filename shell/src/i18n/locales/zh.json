@@ -910,14 +910,14 @@
     "settings": "设置"
   },
   "ntp": {
-    "tagline": "搜索网页或打开快捷方式",
-    "searchPlaceholder": "搜索或输入网站名称",
-    "addShortcut": "添加快捷方式",
+    "tagline": "",
+    "searchPlaceholder": "搜索或输入网址",
+    "addShortcut": "添加",
     "protection": {
-      "blocked": "已拦截请求",
-      "active": "保护已启用 · 已加载 {{count}} 个列表",
-      "loading": "正在加载保护列表…",
-      "error": "保护列表不可用"
+      "blocked": "已拦截",
+      "active": "{{count}} 个列表",
+      "loading": "正在加载列表…",
+      "error": "列表不可用"
     },
     "shortcuts": {
       "apple": "Apple",

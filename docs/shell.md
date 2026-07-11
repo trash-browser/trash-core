@@ -84,7 +84,24 @@ yet. The ad-block manager *is* live (see below).
 
 ## Host ⇆ shell contracts
 
-There are two distinct channels between the native host and the shell.
+There are three channels between the native host and the shell.
+
+### 0. General IPC (`miko://shell/ipc` + `window.trashCef`)
+
+Bidirectional RPC used by New Tab navigation, About versions, overlay
+actions, and ad-block snapshots on demand.
+
+- **Shell → host:** `POST miko://shell/ipc` with
+  `{ id?, method, params }` (also `GET ?payload=` / `?method=`).
+- **Host → shell:** on every `miko://shell/` load the host injects
+  `window.trashCef` (`invoke` / `send` / `navigate` / …) and dispatches
+  `trash-cef-ready`.
+- Shell client: [`src/native/ipc.ts`](../shell/src/native/ipc.ts).
+- Rust: [`src/shell_ipc.rs`](../src/shell_ipc.rs) + scheme routing in
+  `cef_host.rs`.
+
+Methods today: `ping`, `navigate`, `open`, `getVersions`,
+`getAdblockStats`, `getAdblockStatus`, `overlay.action`.
 
 ### 1. Ad-block statistics (host → shell)
 

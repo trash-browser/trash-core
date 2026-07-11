@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { IconPlus, IconRefresh, IconShieldOff } from "@tabler/icons-react";
+import { IconPlus, IconRefresh } from "@tabler/icons-react";
 import { MOCK_FILTER_LISTS } from "../data/managers";
 import { Toggle } from "../components/Toggle";
 import { useAdblockStatistics } from "../adblockStats";
@@ -40,43 +40,42 @@ export function AdblockManagerPage() {
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-y-auto bg-shell">
-      <div className="mx-auto w-full max-w-[860px] px-6 py-8">
+      <div className="mx-auto w-full max-w-[720px] px-7 py-8">
         <header className="mb-6">
-          <div className="mb-3 flex size-12 items-center justify-center rounded-2xl bg-shell-accent-dim text-shell-accent">
-            <IconShieldOff size={24} stroke={1.6} />
-          </div>
-          <h1 className="text-[28px] font-normal tracking-tight text-shell-text">
-            {t("adblock.title")}
-          </h1>
-          <p className="mt-1 text-sm text-shell-muted">{t("adblock.subtitle")}</p>
+          <h1 className="page-title">{t("adblock.title")}</h1>
+          <p className="page-sub">{t("adblock.subtitle")}</p>
         </header>
 
-        <div className="mb-4 grid gap-4 sm:grid-cols-3">
-          <div className="rounded-xl border border-shell-border/80 bg-shell-elevated px-5 py-4">
-            <div className="text-xs text-shell-muted">{t("adblock.stats.blocked")}</div>
-            <div className="mt-1 text-2xl text-shell-text">
+        <div className="mb-6 flex flex-wrap gap-x-10 gap-y-3 border-b border-shell-border/50 pb-5">
+          <div>
+            <div className="text-[11px] tracking-wide text-shell-muted">
+              {t("adblock.stats.blocked")}
+            </div>
+            <div className="mt-1 tabular-nums text-[22px] tracking-[-0.03em] text-shell-text">
               {statistics.totalBlocked.toLocaleString()}
             </div>
           </div>
-          <div className="rounded-xl border border-shell-border/80 bg-shell-elevated px-5 py-4">
-            <div className="text-xs text-shell-muted">{t("adblock.stats.today")}</div>
-            <div className="mt-1 text-2xl text-shell-text">
+          <div>
+            <div className="text-[11px] tracking-wide text-shell-muted">
+              {t("adblock.stats.today")}
+            </div>
+            <div className="mt-1 tabular-nums text-[22px] tracking-[-0.03em] text-shell-text">
               {statistics.blockedToday.toLocaleString()}
             </div>
           </div>
-          <div className="rounded-xl border border-shell-border/80 bg-shell-elevated px-5 py-4">
-            <div className="text-xs text-shell-muted">
+          <div>
+            <div className="text-[11px] tracking-wide text-shell-muted">
               {t("adblock.stats.sevenDays")}
             </div>
-            <div className="mt-1 text-2xl text-shell-text">
+            <div className="mt-1 tabular-nums text-[22px] tracking-[-0.03em] text-shell-text">
               {statistics.blockedLastSevenDays.toLocaleString()}
             </div>
           </div>
         </div>
 
-        <section className="mb-4 rounded-xl border border-shell-border/80 bg-shell-elevated px-5 py-4">
-          <div className="mb-3 flex items-center justify-between gap-3">
-            <h2 className="text-sm text-shell-text">{t("adblock.stats.byType")}</h2>
+        <section className="mb-5">
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <h2 className="text-[13px] text-shell-text">{t("adblock.stats.byType")}</h2>
             {!statistics.recording ? (
               <span className="text-[11px] text-shell-danger">
                 {t("adblock.stats.recordingUnavailable")}
@@ -84,14 +83,14 @@ export function AdblockManagerPage() {
             ) : null}
           </div>
           {statistics.byResource.length === 0 ? (
-            <div className="py-4 text-center text-xs text-shell-muted">
+            <div className="py-3 text-[12px] text-shell-muted">
               {t("adblock.stats.noData")}
             </div>
           ) : (
-            <div className="space-y-3">
+            <div className="space-y-2.5">
               {statistics.byResource.map((resource) => (
                 <div key={resource.resourceType}>
-                  <div className="mb-1 flex items-center justify-between gap-4 text-xs">
+                  <div className="mb-1 flex items-center justify-between gap-4 text-[12px]">
                     <span className="text-shell-muted">
                       {resourceTypeLabel(resource.resourceType)}
                     </span>
@@ -99,9 +98,9 @@ export function AdblockManagerPage() {
                       {resource.total.toLocaleString()}
                     </span>
                   </div>
-                  <div className="h-1.5 overflow-hidden rounded-full bg-shell-track/50">
+                  <div className="h-1.5 overflow-hidden rounded-full bg-shell-track/35">
                     <div
-                      className="h-full rounded-full bg-shell-accent"
+                      className="h-full rounded-full bg-shell-accent/85"
                       style={{
                         width: `${Math.max(2, (resource.total / largestResourceCount) * 100)}%`,
                       }}
@@ -113,13 +112,13 @@ export function AdblockManagerPage() {
           )}
         </section>
 
-        <section className="mb-4 overflow-hidden rounded-xl border border-shell-border/80 bg-shell-elevated">
+        <section className="panel mb-5">
           <div className="flex items-center gap-4 px-5 py-3.5">
             <div className="min-w-0 flex-1">
-              <div className="text-[13px] text-shell-text">
+              <div className="text-[13px] tracking-[-0.01em] text-shell-text">
                 {t("adblock.enable.title")}
               </div>
-              <div className="mt-0.5 text-xs text-shell-muted">
+              <div className="mt-0.5 text-[12px] text-shell-muted">
                 {t("adblock.enable.description")}
               </div>
             </div>
@@ -129,12 +128,12 @@ export function AdblockManagerPage() {
               onChange={setEnabled}
             />
           </div>
-          <div className="flex items-center gap-4 border-t border-shell-border/70 px-5 py-3.5">
+          <div className="flex items-center gap-4 border-t border-shell-border/50 px-5 py-3.5">
             <div className="min-w-0 flex-1">
-              <div className="text-[13px] text-shell-text">
+              <div className="text-[13px] tracking-[-0.01em] text-shell-text">
                 {t("adblock.cosmetic.title")}
               </div>
-              <div className="mt-0.5 text-xs text-shell-muted">
+              <div className="mt-0.5 text-[12px] text-shell-muted">
                 {t("adblock.cosmetic.description")}
               </div>
             </div>
@@ -146,24 +145,28 @@ export function AdblockManagerPage() {
           </div>
         </section>
 
-        <div className="mb-2 flex items-center justify-between">
-          <h2 className="text-sm text-shell-text">{t("adblock.listsTitle")}</h2>
+        <div className="mb-2.5 flex items-center justify-between">
+          <h2 className="text-[13px] font-medium tracking-[-0.01em] text-shell-text">
+            {t("adblock.listsTitle")}
+          </h2>
           <button
             type="button"
-            className="inline-flex items-center gap-1 rounded-full px-3 py-1.5 text-[12px] text-shell-accent hover:bg-shell-accent-dim"
+            className="inline-flex items-center gap-1.5 rounded-xl px-2.5 py-1.5 text-[12px] text-shell-muted hover:bg-shell-hover hover:text-shell-text"
           >
-            <IconRefresh size={14} stroke={1.6} />
+            <IconRefresh size={13} stroke={1.5} />
             {t("adblock.updateLists")}
           </button>
         </div>
 
-        <section className="mb-4 overflow-hidden rounded-xl border border-shell-border/80 bg-shell-elevated">
-          <ul className="divide-y divide-shell-border/70">
+        <section className="panel mb-5">
+          <ul className="divide-y divide-shell-border/50">
             {lists.map((list) => (
               <li key={list.id} className="flex items-start gap-4 px-5 py-3.5">
                 <div className="min-w-0 flex-1">
-                  <div className="text-[13px] text-shell-text">{t(list.nameKey)}</div>
-                  <div className="mt-0.5 text-xs text-shell-muted">
+                  <div className="text-[13px] tracking-[-0.01em] text-shell-text">
+                    {t(list.nameKey)}
+                  </div>
+                  <div className="mt-0.5 text-[12px] text-shell-muted">
                     {t(list.descKey)}
                   </div>
                   <div className="mt-1 text-[11px] text-shell-muted">
@@ -181,9 +184,11 @@ export function AdblockManagerPage() {
           </ul>
         </section>
 
-        <h2 className="mb-2 text-sm text-shell-text">{t("adblock.customTitle")}</h2>
-        <section className="overflow-hidden rounded-xl border border-shell-border/80 bg-shell-elevated">
-          <div className="flex gap-2 border-b border-shell-border/70 px-4 py-3">
+        <h2 className="mb-2.5 text-[13px] font-medium tracking-[-0.01em] text-shell-text">
+          {t("adblock.customTitle")}
+        </h2>
+        <section className="panel">
+          <div className="flex gap-2 border-b border-shell-border/50 px-3.5 py-3">
             <input
               value={customRule}
               onChange={(e) => setCustomRule(e.target.value)}
@@ -191,18 +196,18 @@ export function AdblockManagerPage() {
                 if (e.key === "Enter") addRule();
               }}
               placeholder={t("adblock.customPlaceholder")}
-              className="h-9 min-w-0 flex-1 rounded-lg border border-shell-border bg-shell px-3 text-[13px] text-shell-text outline-none placeholder:text-shell-muted focus:border-shell-accent"
+              className="h-9 min-w-0 flex-1 rounded-xl border border-shell-border/80 bg-shell px-3 font-mono text-[12px] text-shell-text outline-none placeholder:text-shell-muted focus:border-shell-accent/70"
             />
             <button
               type="button"
               onClick={addRule}
-              className="inline-flex items-center gap-1 rounded-lg bg-shell-accent-dim px-3 text-[13px] text-shell-accent hover:bg-shell-hover"
+              className="inline-flex items-center gap-1.5 rounded-xl px-3 text-[12px] text-shell-text hover:bg-shell-hover"
             >
-              <IconPlus size={16} stroke={1.6} />
+              <IconPlus size={14} stroke={1.5} />
               {t("adblock.addRule")}
             </button>
           </div>
-          <ul className="divide-y divide-shell-border/70">
+          <ul className="divide-y divide-shell-border/50">
             {customRules.map((rule) => (
               <li
                 key={rule}
@@ -211,7 +216,7 @@ export function AdblockManagerPage() {
                 <span className="min-w-0 flex-1 truncate">{rule}</span>
                 <button
                   type="button"
-                  className="text-xs text-shell-muted hover:text-shell-danger"
+                  className="text-[11px] text-shell-muted hover:text-shell-danger"
                   onClick={() =>
                     setCustomRules((prev) => prev.filter((r) => r !== rule))
                   }

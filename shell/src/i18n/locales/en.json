@@ -910,14 +910,14 @@
     "settings": "Settings"
   },
   "ntp": {
-    "tagline": "Search the web or open a shortcut",
-    "searchPlaceholder": "Search or enter website name",
-    "addShortcut": "Add shortcut",
+    "tagline": "",
+    "searchPlaceholder": "Search or type a URL",
+    "addShortcut": "Add",
     "protection": {
-      "blocked": "Requests blocked",
-      "active": "Protection active · {{count}} lists loaded",
-      "loading": "Loading protection lists…",
-      "error": "Protection lists unavailable"
+      "blocked": "blocked",
+      "active": "{{count}} lists",
+      "loading": "loading lists…",
+      "error": "lists unavailable"
     },
     "shortcuts": {
       "apple": "Apple",

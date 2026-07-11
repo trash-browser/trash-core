@@ -4,8 +4,11 @@
 mod browser_menu;
 mod cef_host;
 mod content;
+mod context_menu;
 mod omnibox;
 mod popup;
+mod shell_ipc;
+mod shortcuts;
 mod tab_lifecycle;
 
 use std::sync::mpsc::Receiver;
@@ -14,9 +17,9 @@ use std::time::Duration;
 use gpui::{
     Animation, AnimationExt as _, App, AssetSource, Bounds, Context, Entity, FocusHandle,
     Focusable, Image, ImageFormat, KeyDownEvent, KeyUpEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ScrollWheelEvent, SharedString, TitlebarOptions, Transformation,
-    Window, WindowBounds, WindowControlArea, WindowDecorations, WindowOptions, div, img,
-    percentage, prelude::*, px, rgb, size, svg,
+    MouseMoveEvent, MouseUpEvent, ScrollDelta, ScrollWheelEvent, SharedString, TitlebarOptions,
+    Transformation, Window, WindowBounds, WindowControlArea, WindowDecorations, WindowHandle,
+    WindowOptions, div, img, percentage, prelude::*, px, rgb, size, svg,
 };
 use gpui_platform::application;
 
@@ -114,6 +117,21 @@ struct Root {
     /// Last OS window title pushed to the platform (avoids redundant updates).
     os_title: String,
     menu_command: std::sync::Arc<std::sync::Mutex<Option<browser_menu::BrowserMenuCommand>>>,
+    /// Open chrome ⋮ menu popup, if any.
+    menu_window: Option<WindowHandle<browser_menu::BrowserMenuView>>,
+    /// Suppress reopen when the ⋮ button both dismisses (mouse-down) and fires click.
+    menu_suppress_open: bool,
+    context_menu_result:
+        std::sync::Arc<std::sync::Mutex<Option<context_menu::ContextMenuResult>>>,
+    context_menu_window: Option<WindowHandle<context_menu::ContextMenuView>>,
+    /// Open on next render (needs a `Window` handle for placement).
+    pending_context_menu: Option<(i32, i32, Vec<context_menu::ContextMenuEntry>)>,
+    /// Current page zoom as a percentage (100 = default).
+    zoom_percent: i32,
+    /// Transient Chrome-style zoom bubble.
+    zoom_hud_visible: bool,
+    /// Bumped on each zoom change so older hide timers are ignored.
+    zoom_hud_generation: u64,
 }
 
 impl Root {
@@ -185,6 +203,14 @@ impl Root {
             start_uri,
             os_title: String::new(),
             menu_command,
+            menu_window: None,
+            menu_suppress_open: false,
+            context_menu_result: Default::default(),
+            context_menu_window: None,
+            pending_context_menu: None,
+            zoom_percent: 100,
+            zoom_hud_visible: false,
+            zoom_hud_generation: 0,
         }
     }
 
@@ -212,6 +238,22 @@ impl Root {
             .and_then(|mut slot| slot.take());
         if let Some(command) = command {
             self.run_browser_menu_command(command, cx);
+        }
+        if let Some(result) = self
+            .context_menu_result
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take())
+        {
+            self.context_menu_window = None;
+            match result {
+                context_menu::ContextMenuResult::Command(id) => {
+                    cef_host::finish_context_menu(Some(id));
+                }
+                context_menu::ContextMenuResult::Cancelled => {
+                    cef_host::finish_context_menu(None);
+                }
+            }
         }
         let mut events = Vec::new();
         cef_host::pump(&self.cef_rx, &mut events);
@@ -297,6 +339,19 @@ impl Root {
                     cx.notify();
                 }
             }
+            CefEvent::ShellOverlay {
+                action,
+                overlay,
+                payload,
+            } => {
+                eprintln!(
+                    "[shell-ipc] overlay action={action} overlay={overlay} payload={payload}"
+                );
+            }
+            CefEvent::PageContextMenu { x, y, entries } => {
+                self.pending_context_menu = Some((x, y, entries));
+                cx.notify();
+            }
         }
     }
 
@@ -365,6 +420,8 @@ impl Root {
         // Creates a dedicated browser for this tab (loading the start page) and
         // reveals it. show_tab also hands keyboard focus to the page.
         cef_host::show_tab(id, &self.start_uri);
+        self.zoom_hud_visible = false;
+        self.sync_zoom_percent();
         cx.notify();
     }
 
@@ -379,6 +436,8 @@ impl Root {
         // Reveal this tab's existing browser (no reload); create it on first
         // visit. The previously visible browser is hidden by show_tab.
         cef_host::show_tab(id, &url);
+        self.zoom_hud_visible = false;
+        self.sync_zoom_percent();
         cx.notify();
     }
 
@@ -443,7 +502,131 @@ impl Root {
         cef_host::focus_content();
     }
 
+    fn browser_menu_is_open(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(handle) = self.menu_window else {
+            return false;
+        };
+        if handle.update(cx, |_, _, _| ()).is_ok() {
+            true
+        } else {
+            self.menu_window = None;
+            false
+        }
+    }
+
+    /// Close the chrome menu if open. Returns true when a live menu was dismissed.
+    fn close_browser_menu(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(handle) = self.menu_window.take() else {
+            return false;
+        };
+        handle
+            .update(cx, |_, window, _| {
+                window.remove_window();
+            })
+            .is_ok()
+    }
+
+    fn dismiss_browser_menu(&mut self, cx: &mut Context<Self>) {
+        let _ = self.close_browser_menu(cx);
+        self.menu_suppress_open = false;
+        self.close_context_menu(cx);
+    }
+
+    fn close_context_menu(&mut self, cx: &mut Context<Self>) {
+        if let Some(handle) = self.context_menu_window.take() {
+            let _ = handle.update(cx, |_, window, _| {
+                window.remove_window();
+            });
+        }
+        if let Ok(mut slot) = self.context_menu_result.lock() {
+            if slot.is_none() {
+                *slot = Some(context_menu::ContextMenuResult::Cancelled);
+            }
+        }
+        if let Some(result) = self
+            .context_menu_result
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take())
+        {
+            match result {
+                context_menu::ContextMenuResult::Command(id) => {
+                    cef_host::finish_context_menu(Some(id));
+                }
+                context_menu::ContextMenuResult::Cancelled => {
+                    cef_host::finish_context_menu(None);
+                }
+            }
+        }
+    }
+
+    fn open_page_context_menu(
+        &mut self,
+        view_x: i32,
+        view_y: i32,
+        entries: Vec<context_menu::ContextMenuEntry>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_context_menu(cx);
+        if let Ok(mut slot) = self.context_menu_result.lock() {
+            *slot = None;
+        }
+
+        let popup_size = context_menu::popup_size(&entries);
+        let scale = window.scale_factor();
+        let owner = window.bounds();
+        let (ox, oy) = cef_host::content_device_origin();
+        let mut origin = gpui::point(
+            owner.origin.x + px((ox + view_x) as f32 / scale),
+            owner.origin.y + px((oy + view_y) as f32 / scale),
+        );
+
+        if let Some(display) = window.display(cx) {
+            let work = display.visible_bounds();
+            let work_right = work.origin.x + work.size.width;
+            let work_bottom = work.origin.y + work.size.height;
+            if origin.x + popup_size.width > work_right {
+                origin.x = (work_right - popup_size.width).max(work.origin.x);
+            }
+            if origin.y + popup_size.height > work_bottom {
+                origin.y = (origin.y - popup_size.height).max(work.origin.y);
+            }
+            origin.x = origin.x.clamp(work.origin.x, work_right - popup_size.width);
+            origin.y = origin
+                .y
+                .clamp(work.origin.y, work_bottom - popup_size.height);
+        }
+
+        let result = self.context_menu_result.clone();
+        cef_host::focus_chrome();
+        match cx.open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::new(origin, popup_size))),
+                focus: true,
+                kind: gpui::WindowKind::PopUp,
+                is_movable: false,
+                is_resizable: false,
+                is_minimizable: false,
+                window_background: gpui::WindowBackgroundAppearance::Transparent,
+                window_decorations: Some(WindowDecorations::Client),
+                ..Default::default()
+            },
+            move |window, cx| {
+                cx.new(|cx| context_menu::ContextMenuView::new(entries, result, window, cx))
+            },
+        ) {
+            Ok(handle) => self.context_menu_window = Some(handle),
+            Err(error) => {
+                eprintln!("failed to open context menu: {error:?}");
+                cef_host::finish_context_menu(None);
+            }
+        }
+    }
+
     fn open_browser_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let _ = self.close_browser_menu(cx);
+
         let (popup_size, shadow) = browser_menu::popup_metrics();
         let owner = window.bounds();
         // The toolbar's menu anchor is fixed at the right inset. GPUI window
@@ -476,7 +659,7 @@ impl Root {
 
         let selected = self.menu_command.clone();
         cef_host::focus_chrome();
-        if let Err(error) = cx.open_window(
+        match cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(Bounds::new(origin, popup_size))),
                 focus: true,
@@ -490,8 +673,156 @@ impl Root {
             },
             move |window, cx| cx.new(|cx| browser_menu::BrowserMenuView::new(selected, window, cx)),
         ) {
-            eprintln!("failed to open browser menu: {error:?}");
+            Ok(handle) => self.menu_window = Some(handle),
+            Err(error) => eprintln!("failed to open browser menu: {error:?}"),
         }
+    }
+
+    /// ⋮ button: first press closes an open menu; otherwise opens one.
+    fn on_menu_button_down(&mut self, cx: &mut Context<Self>) {
+        if self.close_browser_menu(cx) {
+            self.menu_suppress_open = true;
+        }
+    }
+
+    fn on_menu_button_click(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.menu_suppress_open {
+            self.menu_suppress_open = false;
+            return;
+        }
+        if self.browser_menu_is_open(cx) {
+            let _ = self.close_browser_menu(cx);
+            return;
+        }
+        self.open_browser_menu(window, cx);
+    }
+
+    fn reload(&mut self, _cx: &mut Context<Self>) {
+        if self.loading {
+            cef_host::stop_load();
+        } else {
+            cef_host::reload();
+        }
+        cef_host::focus_content();
+    }
+
+    fn hard_reload(&mut self, _cx: &mut Context<Self>) {
+        cef_host::reload_ignore_cache();
+        cef_host::focus_content();
+    }
+
+    fn next_tab(&mut self, cx: &mut Context<Self>) {
+        if self.tabs.len() < 2 {
+            return;
+        }
+        let Some(idx) = self.tabs.iter().position(|t| t.id == self.active) else {
+            return;
+        };
+        let next = self.tabs[(idx + 1) % self.tabs.len()].id;
+        self.select_tab(next, cx);
+    }
+
+    fn prev_tab(&mut self, cx: &mut Context<Self>) {
+        if self.tabs.len() < 2 {
+            return;
+        }
+        let Some(idx) = self.tabs.iter().position(|t| t.id == self.active) else {
+            return;
+        };
+        let prev = self.tabs[(idx + self.tabs.len() - 1) % self.tabs.len()].id;
+        self.select_tab(prev, cx);
+    }
+
+    fn focus_omnibox(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.dismiss_browser_menu(cx);
+        self.url_dirty = true;
+        let handle = self.omnibox.read(cx).focus_handle(cx);
+        window.focus(&handle, cx);
+        cef_host::focus_chrome();
+        self.omnibox.update(cx, |omni, cx| omni.select_all_text(cx));
+        cx.notify();
+    }
+
+    fn run_shortcut(
+        &mut self,
+        shortcut: shortcuts::Shortcut,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use shortcuts::Shortcut;
+        match shortcut {
+            Shortcut::NewTab => self.new_tab(cx),
+            Shortcut::CloseTab => {
+                let id = self.active;
+                self.close_tab(id, cx);
+            }
+            Shortcut::NextTab => self.next_tab(cx),
+            Shortcut::PrevTab => self.prev_tab(cx),
+            Shortcut::FocusOmnibox => self.focus_omnibox(window, cx),
+            Shortcut::Reload => self.reload(cx),
+            Shortcut::HardReload => self.hard_reload(cx),
+            Shortcut::GoBack => {
+                cef_host::go_back();
+                cef_host::focus_content();
+            }
+            Shortcut::GoForward => {
+                cef_host::go_forward();
+                cef_host::focus_content();
+            }
+            Shortcut::Downloads => self.navigate("miko://#/download-manager", cx),
+            Shortcut::Settings => self.navigate("miko://#/settings", cx),
+            Shortcut::Print => {
+                cef_host::print_page();
+                cef_host::focus_content();
+            }
+            Shortcut::ZoomIn => self.zoom_in(cx),
+            Shortcut::ZoomOut => self.zoom_out(cx),
+            Shortcut::ZoomReset => self.zoom_reset(cx),
+            Shortcut::Exit => {
+                cef_host::close_browser();
+                cx.quit();
+            }
+        }
+    }
+
+    fn sync_zoom_percent(&mut self) {
+        self.zoom_percent = cef_host::zoom_percent();
+    }
+
+    fn show_zoom_hud(&mut self, cx: &mut Context<Self>) {
+        self.sync_zoom_percent();
+        self.zoom_hud_visible = true;
+        self.zoom_hud_generation = self.zoom_hud_generation.wrapping_add(1);
+        let generation = self.zoom_hud_generation;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(2200))
+                .await;
+            this.update(cx, |this, cx| {
+                if this.zoom_hud_generation == generation {
+                    this.zoom_hud_visible = false;
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn zoom_in(&mut self, cx: &mut Context<Self>) {
+        cef_host::zoom_in_step();
+        self.show_zoom_hud(cx);
+    }
+
+    fn zoom_out(&mut self, cx: &mut Context<Self>) {
+        cef_host::zoom_out_step();
+        self.show_zoom_hud(cx);
+    }
+
+    fn zoom_reset(&mut self, cx: &mut Context<Self>) {
+        cef_host::zoom_reset();
+        self.show_zoom_hud(cx);
     }
 
     fn run_browser_menu_command(
@@ -504,6 +835,13 @@ impl Root {
             BrowserMenuCommand::NewTab => self.new_tab(cx),
             BrowserMenuCommand::Downloads => self.navigate("miko://#/download-manager", cx),
             BrowserMenuCommand::Settings => self.navigate("miko://#/settings", cx),
+            BrowserMenuCommand::ZoomOut => self.zoom_out(cx),
+            BrowserMenuCommand::ZoomIn => self.zoom_in(cx),
+            BrowserMenuCommand::ZoomReset => self.zoom_reset(cx),
+            BrowserMenuCommand::Print => {
+                cef_host::print_page();
+                cef_host::focus_content();
+            }
             BrowserMenuCommand::Exit => {
                 cef_host::close_browser();
                 cx.quit();
@@ -511,19 +849,19 @@ impl Root {
             _ => {}
         }
     }
-
-    fn reload(&mut self, _cx: &mut Context<Self>) {
-        if self.loading {
-            cef_host::stop_load();
-        } else {
-            cef_host::reload();
-        }
-        cef_host::focus_content();
-    }
 }
 
 impl Render for Root {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Never open windows during paint — that clears the element arena mid-frame.
+        if self.pending_context_menu.is_some() {
+            cx.defer_in(window, |this, window, cx| {
+                if let Some((x, y, entries)) = this.pending_context_menu.take() {
+                    this.open_page_context_menu(x, y, entries, window, cx);
+                }
+            });
+        }
+
         let can_back = self.can_back;
         let can_forward = self.can_forward;
 
@@ -541,6 +879,55 @@ impl Render for Root {
             .bg(rgb(BG))
             .text_color(rgb(TEXT))
             .text_sm()
+            .key_context("Browser")
+            .on_action(cx.listener(|this, _: &shortcuts::NewTab, window, cx| {
+                this.run_shortcut(shortcuts::Shortcut::NewTab, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &shortcuts::CloseTab, window, cx| {
+                this.run_shortcut(shortcuts::Shortcut::CloseTab, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &shortcuts::NextTab, window, cx| {
+                this.run_shortcut(shortcuts::Shortcut::NextTab, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &shortcuts::PrevTab, window, cx| {
+                this.run_shortcut(shortcuts::Shortcut::PrevTab, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &shortcuts::FocusOmnibox, window, cx| {
+                this.run_shortcut(shortcuts::Shortcut::FocusOmnibox, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &shortcuts::Reload, window, cx| {
+                this.run_shortcut(shortcuts::Shortcut::Reload, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &shortcuts::HardReload, window, cx| {
+                this.run_shortcut(shortcuts::Shortcut::HardReload, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &shortcuts::GoBack, window, cx| {
+                this.run_shortcut(shortcuts::Shortcut::GoBack, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &shortcuts::GoForward, window, cx| {
+                this.run_shortcut(shortcuts::Shortcut::GoForward, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &shortcuts::Downloads, window, cx| {
+                this.run_shortcut(shortcuts::Shortcut::Downloads, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &shortcuts::Settings, window, cx| {
+                this.run_shortcut(shortcuts::Shortcut::Settings, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &shortcuts::Print, window, cx| {
+                this.run_shortcut(shortcuts::Shortcut::Print, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &shortcuts::ZoomIn, window, cx| {
+                this.run_shortcut(shortcuts::Shortcut::ZoomIn, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &shortcuts::ZoomOut, window, cx| {
+                this.run_shortcut(shortcuts::Shortcut::ZoomOut, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &shortcuts::ZoomReset, window, cx| {
+                this.run_shortcut(shortcuts::Shortcut::ZoomReset, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &shortcuts::Exit, window, cx| {
+                this.run_shortcut(shortcuts::Shortcut::Exit, window, cx);
+            }))
             // Window-level drag tracking: page handlers stop when the pointer
             // leaves the page hitbox, so keep forwarding while a button is down.
             .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, _cx| {
@@ -585,14 +972,17 @@ impl Render for Root {
                     .id("page")
                     .track_focus(&self.content_focus)
                     .occlude()
+                    .relative()
                     .flex()
                     .flex_1()
                     .w_full()
                     .min_h_0()
                     .child(content_surface())
+                    .when(self.zoom_hud_visible, |el| el.child(self.zoom_hud(cx)))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                            this.dismiss_browser_menu(cx);
                             this.page_pointer_down = true;
                             window.focus(&this.content_focus, cx);
                             cef_host::focus_content();
@@ -602,6 +992,7 @@ impl Render for Root {
                     .on_mouse_down(
                         MouseButton::Right,
                         cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                            this.dismiss_browser_menu(cx);
                             this.page_pointer_down = true;
                             window.focus(&this.content_focus, cx);
                             cef_host::focus_content();
@@ -611,6 +1002,7 @@ impl Render for Root {
                     .on_mouse_down(
                         MouseButton::Middle,
                         cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                            this.dismiss_browser_menu(cx);
                             this.page_pointer_down = true;
                             window.focus(&this.content_focus, cx);
                             cef_host::focus_content();
@@ -641,14 +1033,39 @@ impl Render for Root {
                     .on_mouse_move(cx.listener(|_this, event: &MouseMoveEvent, window, _cx| {
                         cef_host::send_mouse_move(event, window);
                     }))
-                    .on_scroll_wheel(cx.listener(|_this, event: &ScrollWheelEvent, window, _cx| {
+                    .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, window, cx| {
+                        // Ctrl/Cmd + wheel → zoom (Chrome behavior), including 100%.
+                        if event.modifiers.control || event.modifiers.platform {
+                            let dy = match event.delta {
+                                ScrollDelta::Lines(pt) => pt.y,
+                                ScrollDelta::Pixels(pt) => f32::from(pt.y),
+                            };
+                            // GPUI: scroll up is positive Y → zoom in.
+                            if dy > 0.0 {
+                                this.zoom_in(cx);
+                            } else if dy < 0.0 {
+                                this.zoom_out(cx);
+                            }
+                            cx.stop_propagation();
+                            return;
+                        }
                         cef_host::send_mouse_wheel(event, window);
                     }))
-                    .on_key_down(cx.listener(|_this, event: &KeyDownEvent, _window, cx| {
+                    .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                        if let Some(shortcut) = shortcuts::match_shortcut(&event.keystroke) {
+                            this.run_shortcut(shortcut, window, cx);
+                            cx.stop_propagation();
+                            return;
+                        }
                         cef_host::send_key_down(event);
                         cx.stop_propagation();
                     }))
                     .on_key_up(cx.listener(|_this, event: &KeyUpEvent, _window, cx| {
+                        // Don't forward key-up for chrome shortcuts we already ate.
+                        if shortcuts::is_browser_shortcut(&event.keystroke) {
+                            cx.stop_propagation();
+                            return;
+                        }
                         cef_host::send_key_up(event);
                         cx.stop_propagation();
                     })),
@@ -698,6 +1115,7 @@ impl Root {
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _, window, cx| {
+                            this.dismiss_browser_menu(cx);
                             this.select_tab(id, cx);
                             cx.stop_propagation();
                             window.start_window_move();
@@ -760,17 +1178,26 @@ impl Root {
             .bg(rgb(BAR))
             .child(
                 nav_btn("back", "arrow-left", can_back).when(can_back, |el| {
-                    el.on_click(cx.listener(|this, _, _w, cx| this.go_back(cx)))
+                    el.on_click(cx.listener(|this, _, _w, cx| {
+                        this.dismiss_browser_menu(cx);
+                        this.go_back(cx);
+                    }))
                 }),
             )
             .child(
                 nav_btn("fwd", "arrow-right", can_forward).when(can_forward, |el| {
-                    el.on_click(cx.listener(|this, _, _w, cx| this.go_forward(cx)))
+                    el.on_click(cx.listener(|this, _, _w, cx| {
+                        this.dismiss_browser_menu(cx);
+                        this.go_forward(cx);
+                    }))
                 }),
             )
             .child(
                 nav_btn("reload", if self.loading { "x" } else { "refresh" }, true)
-                    .on_click(cx.listener(|this, _, _w, cx| this.reload(cx))),
+                    .on_click(cx.listener(|this, _, _w, cx| {
+                        this.dismiss_browser_menu(cx);
+                        this.reload(cx);
+                    })),
             )
             .child(
                 div()
@@ -791,9 +1218,13 @@ impl Root {
                             .child(filled_icon("lock", 14.0)),
                     )
                     .child(self.omnibox.clone())
+                    .when(self.zoom_percent != 100, |el| {
+                        el.child(self.zoom_omnibox_chip(cx))
+                    })
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, _, window, cx| {
+                            this.dismiss_browser_menu(cx);
                             this.url_dirty = true;
                             // Focus the field in GPUI and steal OS keyboard focus
                             // from the CEF child so typed keys reach the omnibox.
@@ -804,9 +1235,112 @@ impl Root {
                     ),
             )
             .child(
-                nav_btn("more", "dots", true).on_click(
-                    cx.listener(|this, _, window, cx| this.open_browser_menu(window, cx)),
-                ),
+                nav_btn("more", "dots", true)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, _window, cx| this.on_menu_button_down(cx)),
+                    )
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        this.on_menu_button_click(window, cx);
+                    })),
+            )
+    }
+
+    /// Persistent Chrome-style zoom chip inside the omnibox when not at 100%.
+    fn zoom_omnibox_chip(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let label = SharedString::from(format!("{}%", self.zoom_percent));
+        div()
+            .id("zoom-chip")
+            .flex()
+            .items_center()
+            .gap_1()
+            .h(px(22.0))
+            .px_2()
+            .rounded_md()
+            .bg(rgb(TAB))
+            .border_1()
+            .border_color(rgb(BORDER))
+            .text_xs()
+            .text_color(rgb(TEXT))
+            .cursor_pointer()
+            .hover(|s| s.bg(rgb(HOVER)))
+            .child(outline_icon("zoom", 14.0))
+            .child(label)
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_click(cx.listener(|this, _, _window, cx| {
+                this.dismiss_browser_menu(cx);
+                this.zoom_reset(cx);
+            }))
+    }
+
+    /// Transient zoom bubble (Chrome-like) over the page after Ctrl+/-/0.
+    fn zoom_hud(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let label = SharedString::from(format!("{}%", self.zoom_percent));
+        div()
+            .id("zoom-hud")
+            .absolute()
+            .top_3()
+            .right_3()
+            .flex()
+            .items_center()
+            .gap_1()
+            .h(px(36.0))
+            .px_2()
+            .rounded_lg()
+            .bg(rgb(BAR))
+            .border_1()
+            .border_color(rgb(BORDER))
+            .shadow_lg()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .id("zoom-hud-out")
+                    .size(px(28.0))
+                    .rounded_md()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .hover(|s| s.bg(rgb(HOVER)))
+                    .child(outline_icon("zoom-out", 16.0))
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.dismiss_browser_menu(cx);
+                        this.zoom_out(cx);
+                    })),
+            )
+            .child(
+                div()
+                    .id("zoom-hud-label")
+                    .min_w(px(52.0))
+                    .px_1()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_sm()
+                    .text_color(rgb(TEXT))
+                    .cursor_pointer()
+                    .child(label)
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.dismiss_browser_menu(cx);
+                        this.zoom_reset(cx);
+                    })),
+            )
+            .child(
+                div()
+                    .id("zoom-hud-in")
+                    .size(px(28.0))
+                    .rounded_md()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .hover(|s| s.bg(rgb(HOVER)))
+                    .child(outline_icon("zoom-in", 16.0))
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.dismiss_browser_menu(cx);
+                        this.zoom_in(cx);
+                    })),
             )
     }
 }
@@ -1050,6 +1584,7 @@ fn main() {
 
     application().with_assets(Assets).run(|cx: &mut App| {
         omnibox::bind_keys(cx);
+        shortcuts::bind_keys(cx);
 
         cx.on_app_quit(|_cx| async {
             cef_host::shutdown_cef();

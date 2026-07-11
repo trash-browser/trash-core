@@ -8,3 +8,9 @@ interface ImportMetaEnv {
   /** Underlying Chromium version, e.g. "150.0.7871.115". */
   readonly VITE_CHROMIUM_VERSION?: string;
 }
+
+declare module "*.png" {
+  const src: string;
+  export default src;
+}
+

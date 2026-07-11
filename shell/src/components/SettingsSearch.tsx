@@ -12,27 +12,27 @@ export function SettingsSearch({ value, onChange }: Props) {
   const { t } = useTranslation();
 
   return (
-    <div className="border-b border-shell-border/80 bg-shell px-6 py-3">
+    <div className="border-b border-shell-border/50 bg-shell/80 px-7 py-3 backdrop-blur-sm">
       <label
         htmlFor={id}
-        className="mx-auto flex h-10 max-w-[680px] items-center gap-3 rounded-full border border-shell-border bg-shell-elevated px-4 focus-within:border-shell-accent"
+        className="mx-auto flex h-10 max-w-[640px] items-center gap-2.5 rounded-xl border border-shell-border/80 bg-shell-elevated px-3.5 transition-[border-color] focus-within:border-shell-accent/60"
       >
-        <IconSearch size={18} stroke={1.6} className="text-shell-muted" />
+        <IconSearch size={16} stroke={1.5} className="text-shell-muted" />
         <input
           id={id}
           value={value}
           onChange={(e) => onChange(e.target.value)}
           placeholder={t("shell.searchPlaceholder")}
-          className="h-full w-full bg-transparent text-[13px] text-shell-text outline-none placeholder:text-shell-muted"
+          className="h-full w-full bg-transparent text-[13px] tracking-[-0.01em] text-shell-text outline-none placeholder:text-shell-muted"
         />
         {value ? (
           <button
             type="button"
             aria-label={t("shell.clearSearch")}
             onClick={() => onChange("")}
-            className="rounded-full p-0.5 text-shell-muted hover:bg-shell-hover hover:text-shell-text"
+            className="rounded-lg p-1 text-shell-muted hover:bg-shell-hover hover:text-shell-text"
           >
-            <IconX size={16} stroke={1.6} />
+            <IconX size={14} stroke={1.5} />
           </button>
         ) : null}
       </label>
