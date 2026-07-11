@@ -1,0 +1,9 @@
+[package]
+name = "trash_discord_rpc"
+version = "0.1.0"
+edition = "2024"
+description = "Discord Rich Presence for Trash Browser (title, host, session timer)"
+
+[dependencies]
+discord-rich-presence = "1.1"
+url = "2.5"

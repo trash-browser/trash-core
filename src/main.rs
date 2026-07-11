@@ -26,6 +26,12 @@ use gpui_platform::application;
 use cef_host::CefEvent;
 use content::content_surface;
 use omnibox::{Omnibox, OmniboxEvent};
+use trash_discord_rpc::{DiscordRpc, DiscordRpcConfig, PresenceStatus};
+
+/// Discord application ID for Rich Presence.
+/// Create one at https://discord.com/developers/applications, enable Rich
+/// Presence, upload art asset `logo`, then set this or `TRASH_DISCORD_CLIENT_ID`.
+const DISCORD_CLIENT_ID: &str = "1525563684888252457";
 
 // ---- palette (mirrors chrome.html) ---------------------------------------
 const BG: u32 = 0x1c1c1e;
@@ -121,8 +127,7 @@ struct Root {
     menu_window: Option<WindowHandle<browser_menu::BrowserMenuView>>,
     /// Suppress reopen when the ⋮ button both dismisses (mouse-down) and fires click.
     menu_suppress_open: bool,
-    context_menu_result:
-        std::sync::Arc<std::sync::Mutex<Option<context_menu::ContextMenuResult>>>,
+    context_menu_result: std::sync::Arc<std::sync::Mutex<Option<context_menu::ContextMenuResult>>>,
     context_menu_window: Option<WindowHandle<context_menu::ContextMenuView>>,
     /// Open on next render (needs a `Window` handle for placement).
     pending_context_menu: Option<(i32, i32, Vec<context_menu::ContextMenuEntry>)>,
@@ -134,6 +139,8 @@ struct Root {
     zoom_hud_visible: bool,
     /// Bumped on each zoom change so older hide timers are ignored.
     zoom_hud_generation: u64,
+    /// Discord Rich Presence worker (no-op when client ID unset).
+    discord_rpc: DiscordRpc,
 }
 
 impl Root {
@@ -190,7 +197,7 @@ impl Root {
             std::sync::Mutex<Option<browser_menu::BrowserMenuCommand>>,
         > = Default::default();
 
-        Self {
+        let root = Self {
             tabs: vec![Tab::blank(1, "Start")],
             active: 1,
             next_id: 2,
@@ -214,7 +221,26 @@ impl Root {
             zoom_percent: 100,
             zoom_hud_visible: false,
             zoom_hud_generation: 0,
-        }
+            discord_rpc: DiscordRpc::start(DiscordRpcConfig {
+                client_id: DISCORD_CLIENT_ID.into(),
+                ..DiscordRpcConfig::default()
+            }),
+        };
+        root.sync_discord_rpc();
+        root
+    }
+
+    fn sync_discord_rpc(&self) {
+        let tab = self.active_tab();
+        let title = tab
+            .map(|t| t.title.to_string())
+            .unwrap_or_else(|| "New Tab".into());
+        let url = tab.map(|t| t.url.clone()).unwrap_or_default();
+        self.discord_rpc.update(PresenceStatus {
+            title,
+            url,
+            tab_count: self.tabs.len(),
+        });
     }
 
     /// OS window title (taskbar / Alt-Tab): "Trash Browser" on the start page,
@@ -298,6 +324,9 @@ impl Root {
                 if tab_id == self.active && !self.url_dirty {
                     self.omnibox.update(cx, |omni, cx| omni.set_text(shown, cx));
                 }
+                if tab_id == self.active {
+                    self.sync_discord_rpc();
+                }
                 cx.notify();
             }
             CefEvent::Title { tab_id, title } => {
@@ -307,6 +336,9 @@ impl Root {
                     } else {
                         title.into()
                     };
+                }
+                if tab_id == self.active {
+                    self.sync_discord_rpc();
                 }
                 cx.notify();
             }
@@ -433,6 +465,7 @@ impl Root {
         cef_host::show_tab(id, &self.start_uri);
         self.zoom_hud_visible = false;
         self.sync_zoom_percent();
+        self.sync_discord_rpc();
         cx.notify();
     }
 
@@ -449,6 +482,7 @@ impl Root {
         cef_host::show_tab(id, &url);
         self.zoom_hud_visible = false;
         self.sync_zoom_percent();
+        self.sync_discord_rpc();
         cx.notify();
     }
 
@@ -467,6 +501,7 @@ impl Root {
         // This closes only the CefBrowser owned by the tab. Application/window
         // shutdown is handled exclusively by the top-level close command.
         cef_host::close_tab(id);
+        self.sync_discord_rpc();
     }
 
     /// Retire the chrome tab whose browser closed itself. Its CEF browser is
@@ -790,6 +825,7 @@ impl Root {
             Shortcut::ZoomOut => self.zoom_out(cx),
             Shortcut::ZoomReset => self.zoom_reset(cx),
             Shortcut::Exit => {
+                self.discord_rpc.clear();
                 cef_host::close_browser();
                 cx.quit();
             }
@@ -854,6 +890,7 @@ impl Root {
                 cef_host::focus_content();
             }
             BrowserMenuCommand::Exit => {
+                self.discord_rpc.clear();
                 cef_host::close_browser();
                 cx.quit();
             }
@@ -910,9 +947,11 @@ impl Render for Root {
             .on_action(cx.listener(|this, _: &shortcuts::PrevTab, window, cx| {
                 this.run_shortcut(shortcuts::Shortcut::PrevTab, window, cx);
             }))
-            .on_action(cx.listener(|this, _: &shortcuts::FocusOmnibox, window, cx| {
-                this.run_shortcut(shortcuts::Shortcut::FocusOmnibox, window, cx);
-            }))
+            .on_action(
+                cx.listener(|this, _: &shortcuts::FocusOmnibox, window, cx| {
+                    this.run_shortcut(shortcuts::Shortcut::FocusOmnibox, window, cx);
+                }),
+            )
             .on_action(cx.listener(|this, _: &shortcuts::Reload, window, cx| {
                 this.run_shortcut(shortcuts::Shortcut::Reload, window, cx);
             }))
@@ -1211,11 +1250,12 @@ impl Root {
                 }),
             )
             .child(
-                nav_btn("reload", if self.loading { "x" } else { "refresh" }, true)
-                    .on_click(cx.listener(|this, _, _w, cx| {
+                nav_btn("reload", if self.loading { "x" } else { "refresh" }, true).on_click(
+                    cx.listener(|this, _, _w, cx| {
                         this.dismiss_browser_menu(cx);
                         this.reload(cx);
-                    })),
+                    }),
+                ),
             )
             .child(
                 div()
