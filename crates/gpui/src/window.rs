@@ -1589,7 +1589,11 @@ impl Window {
             Box::new(move || {
                 handle
                     .update(&mut cx, |_, window, _cx| {
-                        for (area, hitbox) in &window.rendered_frame.window_control_hitboxes {
+                        // Prefer the topmost control (painted last). Otherwise a
+                        // parent Drag region steals Max/Min/Close hit-testing.
+                        for (area, hitbox) in
+                            window.rendered_frame.window_control_hitboxes.iter().rev()
+                        {
                             if window.mouse_hit_test.ids.contains(&hitbox.id) {
                                 return Some(*area);
                             }

@@ -9,9 +9,9 @@ use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 use gpui::{
-    App, AssetSource, Bounds, Context, Entity, Focusable, MouseButton, SharedString,
-    TitlebarOptions, Window, WindowBounds, WindowControlArea, WindowOptions, div, prelude::*, px,
-    rgb, size, svg,
+    Animation, AnimationExt as _, App, AssetSource, Bounds, Context, Entity, Focusable, Image,
+    ImageFormat, MouseButton, SharedString, TitlebarOptions, Transformation, Window, WindowBounds,
+    WindowControlArea, WindowOptions, div, img, percentage, prelude::*, px, rgb, size, svg,
 };
 use gpui_platform::application;
 
@@ -76,6 +76,7 @@ struct Tab {
     id: u64,
     title: SharedString,
     url: String,
+    favicon: Option<std::sync::Arc<Image>>,
 }
 
 impl Tab {
@@ -84,6 +85,7 @@ impl Tab {
             id,
             title: title.into(),
             url: String::new(),
+            favicon: None,
         }
     }
 }
@@ -148,6 +150,11 @@ impl Root {
         })
         .detach();
 
+        let start_uri = cef_host::start_uri();
+        // Queue the first tab's browser; it is created once the CEF context and
+        // the native parent window are both ready (see cef_host::show_tab).
+        cef_host::show_tab(1, &start_uri);
+
         Self {
             tabs: vec![Tab::blank(1, "Start")],
             active: 1,
@@ -158,7 +165,7 @@ impl Root {
             loading: false,
             url_dirty: false,
             cef_rx,
-            start_uri: cef_host::start_uri(),
+            start_uri,
             os_title: String::new(),
         }
     }
@@ -189,23 +196,34 @@ impl Root {
 
     fn on_cef_event(&mut self, ev: CefEvent, cx: &mut Context<Self>) {
         match ev {
-            // create_browser_locked owns the initial navigation. Loading the same URL
-            // again from either callback aborts CEF's in-flight document load.
-            CefEvent::Ready | CefEvent::Created => {}
-            CefEvent::Closed => {}
-            CefEvent::Address(url) => {
+            CefEvent::Ready => {}
+            CefEvent::Created { tab_id } => {
+                // Browser HWND exists — if it backs the visible tab, hand it
+                // keyboard focus so the page is immediately typeable.
+                if tab_id == self.active {
+                    cef_host::focus_content();
+                }
+            }
+            CefEvent::Closed { tab_id } => {
+                // A browser that closed on its own (window.close(), renderer
+                // crash). If its chrome tab still exists, retire it too. When the
+                // tab was closed via close_tab the GPUI tab is already gone, so
+                // this is a no-op in that path.
+                self.on_browser_closed(tab_id, cx);
+            }
+            CefEvent::Address { tab_id, url } => {
                 let is_start = url.starts_with("miko://");
                 let shown = if is_start { String::new() } else { url };
-                if let Some(tab) = self.active_tab_mut() {
+                if let Some(tab) = self.tab_by_id_mut(tab_id) {
                     tab.url = shown.clone();
                 }
-                if !self.url_dirty {
+                if tab_id == self.active && !self.url_dirty {
                     self.omnibox.update(cx, |omni, cx| omni.set_text(shown, cx));
                 }
                 cx.notify();
             }
-            CefEvent::Title(title) => {
-                if let Some(tab) = self.active_tab_mut() {
+            CefEvent::Title { tab_id, title } => {
+                if let Some(tab) = self.tab_by_id_mut(tab_id) {
                     tab.title = if title.is_empty() {
                         "New Tab".into()
                     } else {
@@ -215,13 +233,30 @@ impl Root {
                 cx.notify();
             }
             CefEvent::Loading {
+                tab_id,
                 loading,
                 can_back,
                 can_forward,
             } => {
-                self.loading = loading;
-                self.can_back = can_back;
-                self.can_forward = can_forward;
+                // Nav buttons and the omnibox reflect the visible tab only.
+                if tab_id == self.active {
+                    self.loading = loading;
+                    self.can_back = can_back;
+                    self.can_forward = can_forward;
+                    cx.notify();
+                }
+            }
+            CefEvent::Favicon { tab_id, bytes } => {
+                if let Some(tab) = self.tab_by_id_mut(tab_id) {
+                    tab.favicon = if bytes.is_empty() {
+                        None
+                    } else {
+                        Some(std::sync::Arc::new(Image::from_bytes(
+                            ImageFormat::Png,
+                            bytes,
+                        )))
+                    };
+                }
                 cx.notify();
             }
             CefEvent::ContentFocus => {
@@ -245,6 +280,10 @@ impl Root {
         self.tabs.iter_mut().find(|t| t.id == id)
     }
 
+    fn tab_by_id_mut(&mut self, id: u64) -> Option<&mut Tab> {
+        self.tabs.iter_mut().find(|t| t.id == id)
+    }
+
     fn active_content_url(&self) -> String {
         match self.active_tab() {
             Some(t) if t.url.is_empty() => self.start_uri.clone(),
@@ -264,12 +303,14 @@ impl Root {
             if let Some(tab) = self.active_tab_mut() {
                 tab.url.clear();
                 tab.title = "Start".into();
+                tab.favicon = None;
             }
             self.start_uri.clone()
         } else {
             if let Some(tab) = self.active_tab_mut() {
                 tab.url = target.clone();
                 tab.title = title_for_url(&target).into();
+                tab.favicon = None;
             }
             target
         };
@@ -287,20 +328,28 @@ impl Root {
         self.tabs.push(Tab::blank(id, "New Tab"));
         self.active = id;
         self.url_dirty = false;
+        // Reset nav state until the fresh browser reports it.
+        self.loading = false;
+        self.can_back = false;
+        self.can_forward = false;
         self.sync_omnibox(cx);
-        cef_host::navigate(&self.start_uri);
+        // Creates a dedicated browser for this tab (loading the start page) and
+        // reveals it. show_tab also hands keyboard focus to the page.
+        cef_host::show_tab(id, &self.start_uri);
         cx.notify();
     }
 
     fn select_tab(&mut self, id: u64, cx: &mut Context<Self>) {
-        if !self.tabs.iter().any(|t| t.id == id) {
+        if self.active == id || !self.tabs.iter().any(|t| t.id == id) {
             return;
         }
         self.active = id;
         self.url_dirty = false;
         self.sync_omnibox(cx);
         let url = self.active_content_url();
-        cef_host::navigate(&url);
+        // Reveal this tab's existing browser (no reload); create it on first
+        // visit. The previously visible browser is hidden by show_tab.
+        cef_host::show_tab(id, &url);
         cx.notify();
     }
 
@@ -309,6 +358,8 @@ impl Root {
             return;
         };
         self.tabs.remove(i);
+        // Tear down this tab's browser regardless of whether it was active.
+        cef_host::close_tab(id);
         if self.tabs.is_empty() {
             cef_host::close_browser();
             cx.quit();
@@ -320,17 +371,43 @@ impl Root {
             self.url_dirty = false;
             self.sync_omnibox(cx);
             let url = self.active_content_url();
-            cef_host::navigate(&url);
+            cef_host::show_tab(self.active, &url);
+        }
+        cx.notify();
+    }
+
+    /// Retire the chrome tab whose browser closed itself. Its CEF browser is
+    /// already gone, so unlike `close_tab` this does not call into `cef_host` to
+    /// close anything — it only fixes up the tab strip and active selection.
+    fn on_browser_closed(&mut self, tab_id: u64, cx: &mut Context<Self>) {
+        let Some(i) = self.tabs.iter().position(|t| t.id == tab_id) else {
+            return;
+        };
+        self.tabs.remove(i);
+        if self.tabs.is_empty() {
+            cef_host::close_browser();
+            cx.quit();
+            return;
+        }
+        if self.active == tab_id {
+            let neighbor = i.min(self.tabs.len() - 1);
+            self.active = self.tabs[neighbor].id;
+            self.url_dirty = false;
+            self.sync_omnibox(cx);
+            let url = self.active_content_url();
+            cef_host::show_tab(self.active, &url);
         }
         cx.notify();
     }
 
     fn go_back(&mut self, _cx: &mut Context<Self>) {
         cef_host::go_back();
+        cef_host::focus_content();
     }
 
     fn go_forward(&mut self, _cx: &mut Context<Self>) {
         cef_host::go_forward();
+        cef_host::focus_content();
     }
 
     fn reload(&mut self, _cx: &mut Context<Self>) {
@@ -339,6 +416,7 @@ impl Root {
         } else {
             cef_host::reload();
         }
+        cef_host::focus_content();
     }
 }
 
@@ -363,17 +441,38 @@ impl Render for Root {
             .text_sm()
             .child(self.titlebar(window.is_maximized(), cx))
             .child(self.toolbar(can_back, can_forward, cx))
-            .child(content_surface())
+            .child(
+                // Clicking the page area (when GPUI receives the hit) returns
+                // keyboard focus to CEF. The native child also SetFocus's itself
+                // on click; this covers the case where chrome still owns focus.
+                div()
+                    .id("page")
+                    .flex()
+                    .flex_1()
+                    .w_full()
+                    .min_h_0()
+                    .child(content_surface())
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|_this, _, window, _cx| {
+                            window.blur();
+                            cef_host::focus_content();
+                        }),
+                    ),
+            )
     }
 }
 
 impl Root {
     fn titlebar(&self, is_maximized: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let active = self.active;
+        let loading = self.loading;
         let mut tabs = div().flex().items_end().gap_1().pl_2();
         for tab in &self.tabs {
             let id = tab.id;
             let is_active = id == active;
+            let show_spinner = is_active && loading;
+            let favicon = tab.favicon.clone();
             tabs = tabs.child(
                 div()
                     .id(SharedString::from(format!("tab{id}")))
@@ -387,6 +486,7 @@ impl Root {
                     .rounded_t_lg()
                     .bg(rgb(if is_active { TAB_ACTIVE } else { TAB }))
                     .text_color(rgb(if is_active { TEXT } else { MUTED }))
+                    .child(tab_leading_icon(id, show_spinner, favicon))
                     .child(div().flex_1().truncate().child(tab.title.clone()))
                     .child(
                         div()
@@ -440,6 +540,9 @@ impl Root {
                 // drag handle. On Windows dragging goes through the native
                 // WM_NCHITTEST/HTCAPTION path (window_control_area); on other
                 // platforms start_window_move drives it.
+                //
+                // Do NOT put Drag on the outer titlebar — it would cover the
+                // min/max/close buttons and turn maximize clicks into caption drags.
                 div()
                     .flex_1()
                     .h_full()
@@ -447,7 +550,6 @@ impl Root {
                     .on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move()),
             )
             .child(window_controls(is_maximized))
-            .on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move())
     }
 
     fn toolbar(
@@ -512,6 +614,35 @@ impl Root {
     }
 }
 
+fn tab_leading_icon(
+    tab_id: u64,
+    loading: bool,
+    favicon: Option<std::sync::Arc<Image>>,
+) -> impl IntoElement {
+    let icon_slot = div()
+        .size(px(16.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .overflow_hidden();
+
+    if loading {
+        icon_slot.child(outline_icon("loader-2", 14.0).with_animation(
+            SharedString::from(format!("tab-spin-{tab_id}")),
+            Animation::new(Duration::from_millis(750)).repeat(),
+            |svg, delta| svg.with_transformation(Transformation::rotate(percentage(delta))),
+        ))
+    } else if let Some(favicon) = favicon {
+        icon_slot.child(
+            img(favicon)
+                .size(px(14.0))
+                .object_fit(gpui::ObjectFit::Contain),
+        )
+    } else {
+        icon_slot.child(outline_icon("world", 14.0))
+    }
+}
+
 fn nav_btn(id: &'static str, icon: &'static str, enabled: bool) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
@@ -534,6 +665,9 @@ fn window_controls(is_maximized: bool) -> impl IntoElement {
         .flex()
         .items_center()
         .gap_1()
+        // Keep these as client-area clicks (no WindowControlArea). Mixing
+        // HTMAXBUTTON with on_click double-toggles maximize/restore on Windows.
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .child(
             div()
                 .id("min")
@@ -550,7 +684,6 @@ fn window_controls(is_maximized: bool) -> impl IntoElement {
                 .text_size(px(10.0))
                 .text_color(rgb(MUTED))
                 .hover(|s| s.bg(rgb(HOVER)).text_color(rgb(TEXT)))
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .child(if cfg!(target_os = "windows") {
                     "\u{e921}"
                 } else {
@@ -574,7 +707,6 @@ fn window_controls(is_maximized: bool) -> impl IntoElement {
                 .text_size(px(10.0))
                 .text_color(rgb(MUTED))
                 .hover(|s| s.bg(rgb(HOVER)).text_color(rgb(TEXT)))
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .child(if cfg!(target_os = "windows") {
                     if is_maximized { "\u{e923}" } else { "\u{e922}" }
                 } else if is_maximized {
@@ -600,7 +732,6 @@ fn window_controls(is_maximized: bool) -> impl IntoElement {
                 .text_size(px(10.0))
                 .text_color(rgb(MUTED))
                 .hover(|s| s.bg(rgb(0xe81123)).text_color(rgb(0xffffff)))
-                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                 .child(if cfg!(target_os = "windows") {
                     "\u{e8bb}"
                 } else {

@@ -346,6 +346,16 @@ fn translate_accelerator(msg: &MSG) -> Option<()> {
         return None;
     }
 
+    // Only GPUI's own windows understand WM_GPUI_KEYDOWN. For a foreign child
+    // window on this thread — e.g. an embedded CEF browser — SendMessageW hits
+    // DefWindowProc and returns 0, which would be misread as "key consumed" and
+    // swallow the WM_KEYDOWN before TranslateMessage/DispatchMessage ever run.
+    // Let those messages fall through so the child actually receives keyboard
+    // input (and generates its own WM_CHAR).
+    if !is_gpui_window(msg.hwnd) {
+        return None;
+    }
+
     let result = unsafe {
         SendMessageW(
             msg.hwnd,
@@ -355,6 +365,19 @@ fn translate_accelerator(msg: &MSG) -> Option<()> {
         )
     };
     (result.0 == 0).then_some(())
+}
+
+/// True when `hwnd` was created with GPUI's own window class. Used to avoid
+/// hijacking keyboard messages destined for embedded child windows.
+fn is_gpui_window(hwnd: HWND) -> bool {
+    // WINDOW_CLASS_NAME in window.rs is w!("Zed::Window").
+    const GPUI_CLASS: &[u16] = &[
+        b'Z' as u16, b'e' as u16, b'd' as u16, b':' as u16, b':' as u16, b'W' as u16, b'i' as u16,
+        b'n' as u16, b'd' as u16, b'o' as u16, b'w' as u16,
+    ];
+    let mut buffer = [0u16; 32];
+    let len = unsafe { GetClassNameW(hwnd, &mut buffer) };
+    len as usize == GPUI_CLASS.len() && &buffer[..len as usize] == GPUI_CLASS
 }
 
 impl Platform for WindowsPlatform {

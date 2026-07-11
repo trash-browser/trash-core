@@ -913,6 +913,12 @@
     "tagline": "ウェブを検索するかショートカットを開く",
     "searchPlaceholder": "検索またはウェブサイト名を入力",
     "addShortcut": "ショートカットを追加",
+    "protection": {
+      "blocked": "ブロックしたリクエスト",
+      "active": "保護は有効 · {{count}}リストを読み込み済み",
+      "loading": "保護リストを読み込み中…",
+      "error": "保護リストを利用できません"
+    },
     "shortcuts": {
       "apple": "Apple",
       "wiki": "Wikipedia",
@@ -959,8 +965,11 @@
     "subtitle": "広告、トラッカー、煩わしい要素をブロック",
     "stats": {
       "blocked": "ブロックしたリクエスト",
-      "rules": "有効なルール",
-      "lists": "有効なリスト"
+      "today": "今日のブロック数",
+      "sevenDays": "過去7日間",
+      "byType": "リソース種類別",
+      "noData": "ブロックされたリクエストはまだありません",
+      "recordingUnavailable": "統計を記録できません"
     },
     "enable": {
       "title": "広告ブロックを有効にする",

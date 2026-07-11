@@ -2,42 +2,113 @@
 //! browser parented as an X11 child of the GPUI window.
 
 use cef::{args::Args, *};
+use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{
+    Arc, Mutex, OnceLock,
+    atomic::{AtomicU64, Ordering},
+};
+use trash_adblock::{
+    AdBlockAdapter, AdBlockDecision, AdBlockService, AdBlockServiceBuilder, AdapterRequest,
+    BraveAdBlockEngine, FilterListStatus, FilterListUpdater, FrameContext, FrameKey,
+    NavigationContextStore, RequestContext, ResourceType as AdBlockResourceType,
+    StatisticsRecorder, StatisticsSnapshot, YoutubeResponseKind, classify_youtube_response,
+    sanitize_youtube_response, statistics_channel,
+};
 
 /// Events pushed from CEF callbacks (UI thread) and drained by the GPUI pump.
+/// Every per-page event carries the owning `tab_id` so the chrome can update the
+/// right tab even when the event comes from a background browser.
 #[derive(Debug, Clone)]
 pub enum CefEvent {
     Ready,
-    Created,
-    Closed,
-    Address(String),
-    Title(String),
+    Created {
+        tab_id: u64,
+    },
+    Closed {
+        tab_id: u64,
+    },
+    Address {
+        tab_id: u64,
+        url: String,
+    },
+    Title {
+        tab_id: u64,
+        title: String,
+    },
     Loading {
+        tab_id: u64,
         loading: bool,
         can_back: bool,
         can_forward: bool,
+    },
+    /// PNG bytes for the page favicon (empty clears it).
+    Favicon {
+        tab_id: u64,
+        bytes: Vec<u8>,
     },
     /// The CEF content browser took keyboard focus (e.g. user clicked the page).
     ContentFocus,
 }
 
+/// A tab whose CEF browser has not been created yet.
+struct PendingTab {
+    tab_id: u64,
+    url: String,
+}
+
 struct Shared {
     tx: Sender<CefEvent>,
-    browser: Option<Browser>,
+    /// Created content browsers, keyed by GPUI tab id.
+    browsers: HashMap<u64, Browser>,
+    /// CEF browser identifier -> owning tab id (for routing callbacks).
+    identifier_to_tab: HashMap<i32, u64>,
+    /// The visible tab. Its browser fills the content area; others are hidden.
+    active_tab: Option<u64>,
+    /// Tabs waiting for context/parent before their browser can be created.
+    to_create: VecDeque<PendingTab>,
+    /// Tabs whose create call was issued, awaiting `on_after_created` (FIFO so we
+    /// can correlate the created browser back to the requesting tab).
+    creating: VecDeque<PendingTab>,
+    /// Per-tab URL to load once the browser exists (a navigation that arrived
+    /// before creation finished).
+    pending_nav: HashMap<u64, String>,
     /// Native parent window + last content bounds (device pixels).
     parent: Option<u64>,
     bounds: Rect,
     start_uri: String,
-    pending_url: Option<String>,
     context_ready: bool,
+}
+
+impl Shared {
+    fn active_browser(&self) -> Option<Browser> {
+        self.active_tab
+            .and_then(|id| self.browsers.get(&id).cloned())
+    }
 }
 
 /// Shared CEF state (browser process only).
 static SHARED: OnceLock<Arc<Mutex<Shared>>> = OnceLock::new();
 
+struct AdBlockRuntime {
+    service: Arc<AdBlockService>,
+    adapter: AdBlockAdapter,
+    navigation: Arc<NavigationContextStore>,
+    filter_updater: Mutex<FilterListUpdater>,
+    recorder: Mutex<Option<StatisticsRecorder>>,
+    fallback_statistics: StatisticsSnapshot,
+    last_pushed_statistics_version: AtomicU64,
+    last_pushed_filter_version: AtomicU64,
+}
+
+static ADBLOCK: OnceLock<Arc<AdBlockRuntime>> = OnceLock::new();
+
 fn shared() -> Arc<Mutex<Shared>> {
     SHARED.get().expect("CEF not initialized").clone()
+}
+
+fn adblock_runtime() -> Arc<AdBlockRuntime> {
+    ADBLOCK.get().expect("ad blocker not initialized").clone()
 }
 
 /// Bootstrap CEF. `args` must outlive the whole process (MainArgs points into it).
@@ -68,9 +139,50 @@ pub fn init(args: &Args) -> Option<Receiver<CefEvent>> {
     let _ = std::fs::create_dir_all(&cache_dir);
 
     let (tx, rx) = mpsc::channel();
+    let (statistics_sink, statistics_receiver) = statistics_channel(4096);
+    let service = Arc::new(
+        AdBlockServiceBuilder::default()
+            .statistics(statistics_sink)
+            .build(),
+    );
+    let navigation = Arc::new(NavigationContextStore::default());
+    let filter_updater =
+        FilterListUpdater::start(cache_dir.join("adblock").join("lists"), service.clone());
+    let database_path = cache_dir.join("adblock.dat");
+    let recorder = match StatisticsRecorder::open(&database_path, statistics_receiver) {
+        Ok(recorder) => {
+            eprintln!(
+                "[adblock] recording statistics in {}",
+                recorder.database_path().display()
+            );
+            Some(recorder)
+        }
+        Err(error) => {
+            eprintln!(
+                "[adblock] failed to open statistics database {}: {error}",
+                database_path.display()
+            );
+            None
+        }
+    };
+    let _ = ADBLOCK.set(Arc::new(AdBlockRuntime {
+        adapter: AdBlockAdapter::new(service.clone(), navigation.clone()),
+        service,
+        navigation,
+        filter_updater: Mutex::new(filter_updater),
+        recorder: Mutex::new(recorder),
+        fallback_statistics: StatisticsSnapshot::unavailable(),
+        last_pushed_statistics_version: AtomicU64::new(0),
+        last_pushed_filter_version: AtomicU64::new(0),
+    }));
     let _ = SHARED.set(Arc::new(Mutex::new(Shared {
         tx,
-        browser: None,
+        browsers: HashMap::new(),
+        identifier_to_tab: HashMap::new(),
+        active_tab: None,
+        to_create: VecDeque::new(),
+        creating: VecDeque::new(),
+        pending_nav: HashMap::new(),
         parent: None,
         bounds: Rect {
             x: 0,
@@ -79,7 +191,6 @@ pub fn init(args: &Args) -> Option<Receiver<CefEvent>> {
             height: 1,
         },
         start_uri: String::new(),
-        pending_url: None,
         context_ready: false,
     })));
 
@@ -110,13 +221,30 @@ pub fn init(args: &Args) -> Option<Receiver<CefEvent>> {
 }
 
 pub fn shutdown_cef() {
-    let browser = shared().lock().ok().and_then(|mut s| s.browser.take());
-    if let Some(host) = browser.as_ref().and_then(Browser::host) {
-        host.close_browser(1);
+    let browsers: Vec<Browser> = shared()
+        .lock()
+        .ok()
+        .map(|mut s| s.browsers.drain().map(|(_, b)| b).collect())
+        .unwrap_or_default();
+    for browser in &browsers {
+        if let Some(host) = browser.host() {
+            host.close_browser(1);
+        }
     }
     // Drain a few pump iterations so close completes.
     for _ in 0..20 {
         do_message_loop_work();
+    }
+    if let Some(runtime) = ADBLOCK.get()
+        && let Ok(mut updater) = runtime.filter_updater.lock()
+    {
+        updater.shutdown();
+    }
+    if let Some(runtime) = ADBLOCK.get()
+        && let Ok(mut recorder) = runtime.recorder.lock()
+        && let Some(mut recorder) = recorder.take()
+    {
+        recorder.shutdown();
     }
     shutdown();
 }
@@ -124,6 +252,7 @@ pub fn shutdown_cef() {
 /// Drive CEF from the GPUI main thread. Call ~every 10ms.
 pub fn pump(rx: &Receiver<CefEvent>, out: &mut Vec<CefEvent>) {
     do_message_loop_work();
+    push_adblock_statistics(false);
     loop {
         match rx.try_recv() {
             Ok(ev) => out.push(ev),
@@ -133,8 +262,88 @@ pub fn pump(rx: &Receiver<CefEvent>, out: &mut Vec<CefEvent>) {
     }
 }
 
-/// Attach (or re-attach) the content browser under `parent_xid` at `bounds`
-/// (device pixels, relative to the parent window).
+fn push_adblock_statistics(force: bool) {
+    let Some(runtime) = ADBLOCK.get() else {
+        return;
+    };
+    let (version, statistics, error) = runtime
+        .recorder
+        .lock()
+        .ok()
+        .and_then(|recorder| recorder.as_ref().map(StatisticsRecorder::latest))
+        .unwrap_or_else(|| (1, runtime.fallback_statistics.clone(), None));
+    let (filter_version, filter_status) = runtime
+        .filter_updater
+        .lock()
+        .map(|updater| updater.latest())
+        .unwrap_or_else(|_| {
+            (
+                1,
+                FilterListStatus::unavailable("filter updater lock poisoned"),
+            )
+        });
+    if !force
+        && runtime
+            .last_pushed_statistics_version
+            .load(Ordering::Acquire)
+            == version
+        && runtime.last_pushed_filter_version.load(Ordering::Acquire) == filter_version
+    {
+        return;
+    }
+    let browser = shared().lock().ok().and_then(|shared| shared.active_browser());
+    let Some(frame) = browser.as_ref().and_then(Browser::main_frame) else {
+        return;
+    };
+    let frame_url = CefString::from(&frame.url()).to_string();
+    if !frame_url.starts_with("miko://shell/") {
+        return;
+    }
+    let Ok(json) = statistics.to_json() else {
+        return;
+    };
+    let Ok(filter_json) = filter_status.to_json() else {
+        return;
+    };
+    if let Some(error) = error {
+        eprintln!("[adblock] statistics recorder stopped: {error}");
+    }
+    let script = format!(
+        "(() => {{ \
+         const detail = {json}; \
+         window.__trashAdblockStats = detail; \
+         window.dispatchEvent(new CustomEvent('trash-adblock-stats', {{ detail }})); \
+         const filterDetail = {filter_json}; \
+         window.__trashAdblockStatus = filterDetail; \
+         window.dispatchEvent(new CustomEvent('trash-adblock-status', {{ detail: filterDetail }})); \
+         }})();"
+    );
+    frame.execute_java_script(
+        Some(&CefString::from(script.as_str())),
+        Some(&CefString::from("miko://shell/adblock-stats-bridge.js")),
+        1,
+    );
+    runtime
+        .last_pushed_statistics_version
+        .store(version, Ordering::Release);
+    runtime
+        .last_pushed_filter_version
+        .store(filter_version, Ordering::Release);
+}
+
+/// Compile complete filter-list texts outside the CEF IO callback and publish
+/// the resulting engine atomically. Callers that handle large subscriptions
+/// should invoke this function from their background worker.
+#[allow(dead_code)] // Updater hook; subscription storage lands in a later phase.
+pub fn replace_adblock_filter_lists(lists: Vec<String>) {
+    let engine = BraveAdBlockEngine::from_filter_lists(lists);
+    adblock_runtime()
+        .service
+        .replace_engine(trash_adblock::EngineSnapshot::new(engine));
+}
+
+/// Attach the content browsers under `parent_xid` and keep the active browser
+/// sized to `bounds` (device pixels, relative to the parent window).
 pub fn set_parent_bounds(parent_xid: u64, bounds: Rect) {
     let shared = shared();
     let browser_to_resize = {
@@ -154,12 +363,10 @@ pub fn set_parent_bounds(parent_xid: u64, bounds: Rect) {
 
         if s.parent != Some(parent_xid) {
             s.parent = Some(parent_xid);
-            if s.context_ready && s.browser.is_none() {
-                create_browser_locked(&mut s);
-            }
+            drain_to_create_locked(&mut s);
             None
         } else if bounds_changed {
-            s.browser.clone()
+            s.active_browser()
         } else {
             None
         }
@@ -169,15 +376,84 @@ pub fn set_parent_bounds(parent_xid: u64, bounds: Rect) {
     }
 }
 
+/// Make `tab_id` the visible tab. Creates its browser on first activation
+/// (loading `url`); on later activations it just reveals the existing browser
+/// so the page keeps its state instead of reloading.
+pub fn show_tab(tab_id: u64, url: &str) {
+    let shared = shared();
+    let (to_hide, to_show) = {
+        let Ok(mut s) = shared.lock() else { return };
+        if s.active_tab == Some(tab_id) && s.browsers.contains_key(&tab_id) {
+            return;
+        }
+        let to_hide = s
+            .active_tab
+            .filter(|id| *id != tab_id)
+            .and_then(|id| s.browsers.get(&id).cloned());
+        s.active_tab = Some(tab_id);
+
+        let to_show = s.browsers.get(&tab_id).cloned();
+        if to_show.is_none()
+            && !s.creating.iter().any(|p| p.tab_id == tab_id)
+            && !s.to_create.iter().any(|p| p.tab_id == tab_id)
+        {
+            // First time we see this tab — queue a browser for it.
+            s.to_create.push_back(PendingTab {
+                tab_id,
+                url: url.to_string(),
+            });
+            drain_to_create_locked(&mut s);
+        }
+        (to_hide, to_show)
+    };
+    // Touch CEF only after releasing the lock (callbacks re-enter this module).
+    if let Some(browser) = to_hide {
+        set_child_visible(&browser, false);
+    }
+    if let Some(browser) = to_show {
+        let bounds = shared.lock().ok().map(|s| s.bounds.clone());
+        if let Some(bounds) = bounds {
+            resize_child(&browser, &bounds); // resize_child shows + repositions
+        }
+        focus_content();
+    }
+}
+
+/// Close the browser backing `tab_id` (if any) and forget its bookkeeping.
+pub fn close_tab(tab_id: u64) {
+    let shared = shared();
+    let browser = {
+        let Ok(mut s) = shared.lock() else { return };
+        s.to_create.retain(|p| p.tab_id != tab_id);
+        s.creating.retain(|p| p.tab_id != tab_id);
+        s.pending_nav.remove(&tab_id);
+        if s.active_tab == Some(tab_id) {
+            s.active_tab = None;
+        }
+        let browser = s.browsers.remove(&tab_id);
+        if let Some(browser) = browser.as_ref() {
+            s.identifier_to_tab.remove(&browser.identifier());
+        }
+        browser
+    };
+    if let Some(host) = browser.as_ref().and_then(Browser::host) {
+        host.close_browser(1);
+    }
+}
+
 pub fn navigate(url: &str) {
     let shared = shared();
     let frame = {
         let Ok(mut s) = shared.lock() else { return };
-        let frame = s.browser.as_ref().and_then(Browser::main_frame);
-        if frame.is_none() {
-            s.pending_url = Some(url.to_string());
+        let Some(tab_id) = s.active_tab else { return };
+        match s.browsers.get(&tab_id).and_then(Browser::main_frame) {
+            Some(frame) => Some(frame),
+            None => {
+                // Browser not created yet — apply the load once it exists.
+                s.pending_nav.insert(tab_id, url.to_string());
+                None
+            }
         }
-        frame
     };
     if let Some(frame) = frame {
         frame.load_url(Some(&CefString::from(url)));
@@ -201,37 +477,51 @@ pub fn focus_chrome() {
 #[cfg(not(target_os = "windows"))]
 pub fn focus_chrome() {}
 
-/// Hand keyboard focus to the CEF content browser (page becomes typeable).
+/// Hand keyboard focus to the active CEF content browser (page becomes typeable).
 pub fn focus_content() {
-    let browser = shared().lock().ok().and_then(|s| s.browser.clone());
-    if let Some(host) = browser.as_ref().and_then(Browser::host) {
-        host.set_focus(1);
+    let browser = shared().lock().ok().and_then(|s| s.active_browser());
+    let Some(host) = browser.as_ref().and_then(Browser::host) else {
+        return;
+    };
+    // Tell CEF the browser is focused, then move Win32 focus onto the child so
+    // OS key events actually reach Chromium (set_focus alone is not enough when
+    // the GPUI parent HWND currently owns keyboard focus).
+    host.set_focus(1);
+    #[cfg(target_os = "windows")]
+    {
+        unsafe extern "system" {
+            fn SetFocus(hwnd: isize) -> isize;
+        }
+        let hwnd = host.window_handle();
+        if !hwnd.0.is_null() {
+            unsafe { SetFocus(hwnd.0 as isize) };
+        }
     }
 }
 
 pub fn go_back() {
-    let browser = shared().lock().ok().and_then(|s| s.browser.clone());
+    let browser = shared().lock().ok().and_then(|s| s.active_browser());
     if let Some(browser) = browser {
         browser.go_back();
     }
 }
 
 pub fn go_forward() {
-    let browser = shared().lock().ok().and_then(|s| s.browser.clone());
+    let browser = shared().lock().ok().and_then(|s| s.active_browser());
     if let Some(browser) = browser {
         browser.go_forward();
     }
 }
 
 pub fn reload() {
-    let browser = shared().lock().ok().and_then(|s| s.browser.clone());
+    let browser = shared().lock().ok().and_then(|s| s.active_browser());
     if let Some(browser) = browser {
         browser.reload();
     }
 }
 
 pub fn stop_load() {
-    let browser = shared().lock().ok().and_then(|s| s.browser.clone());
+    let browser = shared().lock().ok().and_then(|s| s.active_browser());
     if let Some(browser) = browser {
         browser.stop_load();
     }
@@ -244,10 +534,21 @@ pub fn start_uri() -> String {
         .unwrap_or_default()
 }
 
+/// Close every content browser (app is quitting).
 pub fn close_browser() {
-    let browser = shared().lock().ok().and_then(|mut s| s.browser.take());
-    if let Some(host) = browser.as_ref().and_then(Browser::host) {
-        host.close_browser(1);
+    let browsers: Vec<Browser> = shared()
+        .lock()
+        .ok()
+        .map(|mut s| {
+            s.active_tab = None;
+            s.identifier_to_tab.clear();
+            s.browsers.drain().map(|(_, b)| b).collect()
+        })
+        .unwrap_or_default();
+    for browser in &browsers {
+        if let Some(host) = browser.host() {
+            host.close_browser(1);
+        }
     }
 }
 
@@ -258,42 +559,97 @@ fn emit(ev: CefEvent) {
     }
 }
 
-fn create_browser_locked(s: &mut Shared) {
-    let Some(parent) = s.parent else { return };
-    if s.browser.is_some() || !s.context_ready {
+/// Resolve the GPUI tab id that owns `browser`, if it is a tracked content
+/// browser. Callbacks from a browser mid-teardown return `None`.
+fn tab_of(browser: Option<&Browser>) -> Option<u64> {
+    let identifier = browser?.identifier();
+    shared()
+        .lock()
+        .ok()
+        .and_then(|s| s.identifier_to_tab.get(&identifier).copied())
+}
+
+/// Issue `browser_host_create_browser` for every queued tab, once the CEF
+/// context and native parent are both ready. Each request moves to `creating`
+/// so `on_after_created` can correlate the new browser (FIFO) back to its tab.
+fn drain_to_create_locked(s: &mut Shared) {
+    let Some(parent_raw) = s.parent else { return };
+    if !s.context_ready {
         return;
     }
 
-    let url = s.pending_url.take().unwrap_or_else(|| s.start_uri.clone());
-
-    eprintln!(
-        "[cef] create parent=0x{parent:x} rect=({},{} {}x{}) url={url}",
-        s.bounds.x, s.bounds.y, s.bounds.width, s.bounds.height
-    );
-
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-    let parent = parent as cef::sys::cef_window_handle_t;
+    let parent = parent_raw as cef::sys::cef_window_handle_t;
     #[cfg(target_os = "windows")]
-    let parent = cef::sys::HWND(parent as usize as *mut _);
+    let parent = cef::sys::HWND(parent_raw as usize as *mut _);
 
-    let window_info = WindowInfo {
-        runtime_style: RuntimeStyle::ALLOY,
-        ..Default::default()
+    while let Some(pending) = s.to_create.pop_front() {
+        eprintln!(
+            "[cef] create tab={} parent=0x{parent_raw:x} rect=({},{} {}x{}) url={}",
+            pending.tab_id, s.bounds.x, s.bounds.y, s.bounds.width, s.bounds.height, pending.url
+        );
+
+        let window_info = WindowInfo {
+            runtime_style: RuntimeStyle::ALLOY,
+            ..Default::default()
+        }
+        .set_as_child(parent, &s.bounds);
+
+        let mut client = ContentClient::new();
+        let settings = BrowserSettings::default();
+        let ok = browser_host_create_browser(
+            Some(&window_info),
+            Some(&mut client),
+            Some(&CefString::from(pending.url.as_str())),
+            Some(&settings),
+            None,
+            None,
+        );
+        if ok == 0 {
+            eprintln!("[cef] browser_host_create_browser failed (tab={})", pending.tab_id);
+            continue;
+        }
+        s.creating.push_back(pending);
     }
-    .set_as_child(parent, &s.bounds);
+}
 
-    let mut client = ContentClient::new();
-    let settings = BrowserSettings::default();
-    let ok = browser_host_create_browser(
-        Some(&window_info),
-        Some(&mut client),
-        Some(&CefString::from(url.as_str())),
-        Some(&settings),
-        None,
-        None,
-    );
-    if ok == 0 {
-        eprintln!("[cef] browser_host_create_browser failed");
+/// Show or hide a content browser's native child window.
+#[cfg(target_os = "windows")]
+fn set_child_visible(browser: &Browser, visible: bool) {
+    const SW_HIDE: i32 = 0;
+    const SW_SHOWNA: i32 = 8; // show without activating (keeps chrome focus rules)
+    unsafe extern "system" {
+        fn ShowWindow(hwnd: isize, cmd: i32) -> i32;
+    }
+    let Some(host) = browser.host() else { return };
+    let hwnd = host.window_handle();
+    if hwnd.0.is_null() {
+        return;
+    }
+    unsafe { ShowWindow(hwnd.0 as isize, if visible { SW_SHOWNA } else { SW_HIDE }) };
+}
+
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+fn set_child_visible(browser: &Browser, visible: bool) {
+    let Some(host) = browser.host() else { return };
+    let xid = host.window_handle();
+    if xid == 0 {
+        return;
+    }
+    let display = get_xdisplay();
+    if display.is_null() {
+        return;
+    }
+    let Ok(xlib) = x11_dl::xlib::Xlib::open() else {
+        return;
+    };
+    unsafe {
+        if visible {
+            (xlib.XMapWindow)(display as *mut _, xid);
+        } else {
+            (xlib.XUnmapWindow)(display as *mut _, xid);
+        }
+        (xlib.XFlush)(display as *mut _);
     }
 }
 
@@ -506,9 +862,7 @@ wrap_browser_process_handler! {
             if let Ok(mut s) = shared().lock() {
                 s.context_ready = true;
                 let _ = s.tx.send(CefEvent::Ready);
-                if s.parent.is_some() && s.browser.is_none() {
-                    create_browser_locked(&mut s);
-                }
+                drain_to_create_locked(&mut s);
             }
         }
 
@@ -555,21 +909,37 @@ wrap_life_span_handler! {
 
     impl LifeSpanHandler {
         fn on_after_created(&self, browser: Option<&mut Browser>) {
-            if let Some(browser) = browser.cloned() {
-                let state = shared().lock().ok().map(|mut s| {
-                    let bounds = s.bounds.clone();
-                    s.browser = Some(browser.clone());
-                    (bounds, s.tx.clone())
-                });
-                let Some((bounds, tx)) = state else { return };
+            let Some(browser) = browser.cloned() else { return };
+            // Correlate this browser with the oldest outstanding create request.
+            let state = shared().lock().ok().and_then(|mut s| {
+                let pending = s.creating.pop_front()?;
+                let tab_id = pending.tab_id;
+                s.browsers.insert(tab_id, browser.clone());
+                s.identifier_to_tab.insert(browser.identifier(), tab_id);
+                let is_active = s.active_tab == Some(tab_id);
+                let bounds = s.bounds.clone();
+                let pending_nav = s.pending_nav.remove(&tab_id);
+                Some((tab_id, is_active, bounds, pending_nav, s.tx.clone()))
+            });
+            let Some((tab_id, is_active, bounds, pending_nav, tx)) = state else {
+                return;
+            };
 
-                // Never call into CEF while holding SHARED: Win32 callbacks can
-                // synchronously re-enter this module and emit an event.
-                resize_child(&browser, &bounds);
-                #[cfg(target_os = "windows")]
-                log_windows_browser("created", &browser);
-                let _ = tx.send(CefEvent::Created);
+            // Never call into CEF while holding SHARED: Win32 callbacks can
+            // synchronously re-enter this module and emit an event.
+            if is_active {
+                resize_child(&browser, &bounds); // positions + shows the child
+            } else {
+                set_child_visible(&browser, false);
             }
+            if let Some(url) = pending_nav
+                && let Some(frame) = browser.main_frame()
+            {
+                frame.load_url(Some(&CefString::from(url.as_str())));
+            }
+            #[cfg(target_os = "windows")]
+            log_windows_browser("created", &browser);
+            let _ = tx.send(CefEvent::Created { tab_id });
         }
 
         fn do_close(&self, _browser: Option<&mut Browser>) -> i32 {
@@ -577,9 +947,17 @@ wrap_life_span_handler! {
         }
 
         fn on_before_close(&self, _browser: Option<&mut Browser>) {
+            let Some(browser) = _browser.as_deref() else { return };
+            let identifier = browser.identifier();
+            adblock_runtime().navigation.remove_browser(identifier);
             if let Ok(mut s) = shared().lock() {
-                s.browser = None;
-                let _ = s.tx.send(CefEvent::Closed);
+                if let Some(tab_id) = s.identifier_to_tab.remove(&identifier) {
+                    s.browsers.remove(&tab_id);
+                    if s.active_tab == Some(tab_id) {
+                        s.active_tab = None;
+                    }
+                    let _ = s.tx.send(CefEvent::Closed { tab_id });
+                }
             }
         }
 
@@ -621,6 +999,9 @@ wrap_load_handler! {
             frame: Option<&mut Frame>,
             _transition_type: TransitionType,
         ) {
+            if let (Some(browser), Some(frame)) = (browser.as_deref(), frame.as_deref()) {
+                update_navigation_context(browser, frame);
+            }
             eprintln!(
                 "[cef] load-start id={} main={} url={}",
                 browser.map(|b| b.identifier()).unwrap_or(-1),
@@ -638,6 +1019,13 @@ wrap_load_handler! {
             frame: Option<&mut Frame>,
             http_status_code: i32,
         ) {
+            let should_push_statistics = frame
+                .as_deref()
+                .is_some_and(|frame| frame.is_main() != 0)
+                && frame
+                    .as_deref()
+                    .map(|frame| CefString::from(&frame.url()).to_string())
+                    .is_some_and(|url| url.starts_with("miko://shell/"));
             eprintln!(
                 "[cef] load-end id={} main={} status={} url={}",
                 browser.map(|b| b.identifier()).unwrap_or(-1),
@@ -648,6 +1036,9 @@ wrap_load_handler! {
                     .map(|f| CefString::from(&f.url()).to_string())
                     .unwrap_or_default(),
             );
+            if should_push_statistics {
+                push_adblock_statistics(true);
+            }
         }
 
         fn on_loading_state_change(
@@ -663,11 +1054,14 @@ wrap_load_handler! {
                     browser.identifier(), is_loading, can_go_back, can_go_forward
                 );
             }
-            emit(CefEvent::Loading {
-                loading: is_loading != 0,
-                can_back: can_go_back != 0,
-                can_forward: can_go_forward != 0,
-            });
+            if let Some(tab_id) = tab_of(_browser.as_deref()) {
+                emit(CefEvent::Loading {
+                    tab_id,
+                    loading: is_loading != 0,
+                    can_back: can_go_back != 0,
+                    can_forward: can_go_forward != 0,
+                });
+            }
         }
 
         fn on_load_error(
@@ -693,6 +1087,43 @@ wrap_request_handler! {
     struct ContentRequestHandler;
 
     impl RequestHandler {
+        fn resource_request_handler(
+            &self,
+            browser: Option<&mut Browser>,
+            frame: Option<&mut Frame>,
+            request: Option<&mut Request>,
+            is_navigation: i32,
+            _is_download: i32,
+            request_initiator: Option<&CefString>,
+            _disable_default_handling: Option<&mut i32>,
+        ) -> Option<ResourceRequestHandler> {
+            let runtime = adblock_runtime();
+            let request_context = match (
+                browser.as_deref(),
+                frame.as_deref(),
+                request.as_deref(),
+            ) {
+                (Some(browser), Some(frame), Some(request)) => Some(RequestContext {
+                    browser_id: browser.identifier(),
+                    frame_id: CefString::from(&frame.identifier()).to_string(),
+                    request_id: request.identifier(),
+                }),
+                _ => None,
+            };
+            let resource_type = request
+                .as_deref()
+                .map(|request| map_cef_resource_type(request.resource_type()))
+                .unwrap_or(AdBlockResourceType::Other);
+            Some(ContentResourceRequestHandler::new(
+                runtime.adapter.clone(),
+                runtime.service.clone(),
+                request_context,
+                resource_type,
+                request_initiator.map(CefString::to_string),
+                is_navigation != 0,
+            ))
+        }
+
         fn on_render_view_ready(&self, browser: Option<&mut Browser>) {
             if let Some(browser) = browser {
                 eprintln!("[cef] render-view-ready id={}", browser.identifier());
@@ -719,6 +1150,325 @@ wrap_request_handler! {
     }
 }
 
+wrap_resource_request_handler! {
+    struct ContentResourceRequestHandler {
+        adapter: AdBlockAdapter,
+        service: Arc<AdBlockService>,
+        request_context: Option<RequestContext>,
+        resource_type: AdBlockResourceType,
+        request_initiator: Option<String>,
+        is_navigation: bool,
+    }
+
+    impl ResourceRequestHandler {
+        fn on_before_resource_load(
+            &self,
+            browser: Option<&mut Browser>,
+            frame: Option<&mut Frame>,
+            request: Option<&mut Request>,
+            _callback: Option<&mut Callback>,
+        ) -> ReturnValue {
+            let (Some(browser), Some(frame), Some(request)) =
+                (browser.as_deref(), frame.as_deref(), request.as_deref())
+            else {
+                // Missing CEF metadata must fail open instead of breaking browsing.
+                return ReturnValue::CONTINUE;
+            };
+
+            update_navigation_context(browser, frame);
+
+            let decision = self.adapter.evaluate(AdapterRequest {
+                browser_id: browser.identifier(),
+                frame_id: CefString::from(&frame.identifier()).to_string(),
+                request_id: request.identifier(),
+                url: CefString::from(&request.url()).to_string(),
+                method: CefString::from(&request.method()).to_string(),
+                resource_type: map_cef_resource_type(request.resource_type()),
+                is_navigation: self.is_navigation,
+                request_initiator: self.request_initiator.clone(),
+            });
+
+            match decision {
+                AdBlockDecision::Allow => ReturnValue::CONTINUE,
+                AdBlockDecision::Block => ReturnValue::CANCEL,
+                AdBlockDecision::RewriteUrl(url) | AdBlockDecision::Redirect(url) => {
+                    request.set_url(Some(&CefString::from(url.as_str())));
+                    ReturnValue::CONTINUE
+                }
+            }
+        }
+
+        fn resource_response_filter(
+            &self,
+            _browser: Option<&mut Browser>,
+            _frame: Option<&mut Frame>,
+            request: Option<&mut Request>,
+            response: Option<&mut Response>,
+        ) -> Option<ResponseFilter> {
+            let request = request?;
+            let response = response?;
+            if response.status() != 200 {
+                return None;
+            }
+            let url = CefString::from(&request.url()).to_string();
+            let mime_type = CefString::from(&response.mime_type()).to_string();
+            let kind = classify_youtube_response(&url, &mime_type)?;
+            Some(YoutubeAdResponseFilter::new(Arc::new(Mutex::new(
+                YoutubeFilterState::new(
+                    kind,
+                    self.service.clone(),
+                    self.request_context.clone(),
+                    self.resource_type,
+                ),
+            ))))
+        }
+    }
+}
+
+const MAX_YOUTUBE_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum YoutubeFilterMode {
+    Buffering,
+    Passthrough,
+    Finished,
+}
+
+struct YoutubeFilterState {
+    kind: YoutubeResponseKind,
+    mode: YoutubeFilterMode,
+    input: Vec<u8>,
+    pending: Vec<u8>,
+    pending_offset: usize,
+    service: Arc<AdBlockService>,
+    request_context: Option<RequestContext>,
+    resource_type: AdBlockResourceType,
+}
+
+impl YoutubeFilterState {
+    fn new(
+        kind: YoutubeResponseKind,
+        service: Arc<AdBlockService>,
+        request_context: Option<RequestContext>,
+        resource_type: AdBlockResourceType,
+    ) -> Self {
+        Self {
+            kind,
+            mode: YoutubeFilterMode::Buffering,
+            input: Vec::new(),
+            pending: Vec::new(),
+            pending_offset: 0,
+            service,
+            request_context,
+            resource_type,
+        }
+    }
+
+    fn process(&mut self, data_in: Option<&[u8]>, data_out: &mut [u8]) -> (usize, usize, bool) {
+        let input_size = data_in.map_or(0, <[u8]>::len);
+        let end_of_input = data_in.is_none();
+
+        if let Some(data) = data_in {
+            match self.mode {
+                YoutubeFilterMode::Buffering
+                    if self.input.len().saturating_add(data.len())
+                        <= MAX_YOUTUBE_RESPONSE_BYTES =>
+                {
+                    self.input.extend_from_slice(data);
+                }
+                YoutubeFilterMode::Buffering => {
+                    self.mode = YoutubeFilterMode::Passthrough;
+                    self.pending = std::mem::take(&mut self.input);
+                    self.pending.extend_from_slice(data);
+                }
+                YoutubeFilterMode::Passthrough => {
+                    self.compact_pending();
+                    self.pending.extend_from_slice(data);
+                }
+                YoutubeFilterMode::Finished => {}
+            }
+        }
+
+        if end_of_input {
+            match self.mode {
+                YoutubeFilterMode::Buffering => self.finalize_sanitized_response(),
+                YoutubeFilterMode::Passthrough => self.mode = YoutubeFilterMode::Finished,
+                YoutubeFilterMode::Finished => {}
+            }
+        }
+
+        let available = self.pending.len().saturating_sub(self.pending_offset);
+        let written = available.min(data_out.len());
+        if written > 0 {
+            let end = self.pending_offset + written;
+            data_out[..written].copy_from_slice(&self.pending[self.pending_offset..end]);
+            self.pending_offset = end;
+        }
+        if self.pending_offset == self.pending.len() {
+            self.pending.clear();
+            self.pending_offset = 0;
+        }
+
+        let done = end_of_input && self.pending.is_empty();
+        (input_size, written, done)
+    }
+
+    fn finalize_sanitized_response(&mut self) {
+        let original = std::mem::take(&mut self.input);
+        let result = sanitize_youtube_response(self.kind, &original);
+        if result.removed_items > 0
+            && let Some(context) = self.request_context.clone()
+        {
+            self.service
+                .record_blocked_request(context, self.resource_type);
+        }
+        self.pending = result.bytes;
+        self.pending_offset = 0;
+        self.mode = YoutubeFilterMode::Finished;
+    }
+
+    fn compact_pending(&mut self) {
+        if self.pending_offset > 0 {
+            self.pending.drain(..self.pending_offset);
+            self.pending_offset = 0;
+        }
+    }
+}
+
+wrap_response_filter! {
+    struct YoutubeAdResponseFilter {
+        state: Arc<Mutex<YoutubeFilterState>>,
+    }
+
+    impl ResponseFilter {
+        fn init_filter(&self) -> i32 {
+            1
+        }
+
+        fn filter(
+            &self,
+            data_in: Option<&mut Vec<u8>>,
+            data_in_read: Option<&mut usize>,
+            data_out: Option<&mut Vec<u8>>,
+            data_out_written: Option<&mut usize>,
+        ) -> ResponseFilterStatus {
+            let Some(data_in_read) = data_in_read else {
+                return ResponseFilterStatus::ERROR;
+            };
+            let Some(data_out_written) = data_out_written else {
+                return ResponseFilterStatus::ERROR;
+            };
+            let Some(data_out) = data_out else {
+                return ResponseFilterStatus::ERROR;
+            };
+            let Ok(mut state) = self.state.lock() else {
+                return ResponseFilterStatus::ERROR;
+            };
+            let (read, written, done) =
+                state.process(data_in.as_ref().map(|data| data.as_slice()), data_out.as_mut_slice());
+            *data_in_read = read;
+            *data_out_written = written;
+            if done {
+                ResponseFilterStatus::DONE
+            } else {
+                ResponseFilterStatus::NEED_MORE_DATA
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod youtube_response_filter_tests {
+    use super::*;
+
+    #[test]
+    fn buffers_sanitizes_and_flushes_chunked_player_response() {
+        let service = Arc::new(AdBlockServiceBuilder::default().build());
+        let context = RequestContext {
+            browser_id: 1,
+            frame_id: "main".into(),
+            request_id: 9,
+        };
+        let mut state = YoutubeFilterState::new(
+            YoutubeResponseKind::PlayerJson,
+            service.clone(),
+            Some(context),
+            AdBlockResourceType::XmlHttpRequest,
+        );
+        let input = br#"{"videoDetails":{"videoId":"abc"},"adPlacements":[1],"playerAds":[2]}"#;
+        let split = input.len() / 2;
+        let mut output_chunk = [0u8; 11];
+
+        let (read, written, done) = state.process(Some(&input[..split]), &mut output_chunk);
+        assert_eq!(read, split);
+        assert_eq!(written, 0);
+        assert!(!done);
+        let (read, written, done) = state.process(Some(&input[split..]), &mut output_chunk);
+        assert_eq!(read, input.len() - split);
+        assert_eq!(written, 0);
+        assert!(!done);
+
+        let mut output = Vec::new();
+        loop {
+            let (_, written, done) = state.process(None, &mut output_chunk);
+            output.extend_from_slice(&output_chunk[..written]);
+            if done {
+                break;
+            }
+        }
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("videoDetails"));
+        assert!(!output.contains("adPlacements"));
+        assert!(!output.contains("playerAds"));
+        assert_eq!(service.blocked_total(), 1);
+    }
+}
+
+fn update_navigation_context(browser: &Browser, frame: &Frame) {
+    let frame_url = CefString::from(&frame.url()).to_string();
+    let top_level_url = if frame.is_main() != 0 {
+        frame_url.clone()
+    } else {
+        browser
+            .main_frame()
+            .map(|main| CefString::from(&main.url()).to_string())
+            .filter(|url| !url.is_empty())
+            .unwrap_or_else(|| frame_url.clone())
+    };
+    adblock_runtime().navigation.upsert(FrameContext {
+        key: FrameKey {
+            browser_id: browser.identifier(),
+            frame_id: CefString::from(&frame.identifier()).to_string(),
+        },
+        frame_url,
+        top_level_url,
+    });
+}
+
+fn map_cef_resource_type(resource_type: cef::ResourceType) -> AdBlockResourceType {
+    match resource_type {
+        cef::ResourceType::MAIN_FRAME => AdBlockResourceType::MainFrame,
+        cef::ResourceType::SUB_FRAME => AdBlockResourceType::SubFrame,
+        cef::ResourceType::STYLESHEET => AdBlockResourceType::Stylesheet,
+        cef::ResourceType::SCRIPT => AdBlockResourceType::Script,
+        cef::ResourceType::IMAGE => AdBlockResourceType::Image,
+        cef::ResourceType::FONT_RESOURCE => AdBlockResourceType::Font,
+        cef::ResourceType::OBJECT | cef::ResourceType::PLUGIN_RESOURCE => {
+            AdBlockResourceType::Object
+        }
+        cef::ResourceType::MEDIA => AdBlockResourceType::Media,
+        cef::ResourceType::WORKER => AdBlockResourceType::Worker,
+        cef::ResourceType::SHARED_WORKER => AdBlockResourceType::SharedWorker,
+        cef::ResourceType::PREFETCH => AdBlockResourceType::Prefetch,
+        cef::ResourceType::FAVICON => AdBlockResourceType::Favicon,
+        cef::ResourceType::XHR => AdBlockResourceType::XmlHttpRequest,
+        cef::ResourceType::PING => AdBlockResourceType::Ping,
+        cef::ResourceType::SERVICE_WORKER => AdBlockResourceType::ServiceWorker,
+        cef::ResourceType::CSP_REPORT => AdBlockResourceType::CspReport,
+        _ => AdBlockResourceType::Other,
+    }
+}
+
 wrap_display_handler! {
     struct ContentDisplayHandler;
 
@@ -729,15 +1479,109 @@ wrap_display_handler! {
             _frame: Option<&mut Frame>,
             url: Option<&CefString>,
         ) {
-            emit(CefEvent::Address(
-                url.map(CefString::to_string).unwrap_or_default(),
-            ));
+            if let Some(tab_id) = tab_of(_browser.as_deref()) {
+                emit(CefEvent::Address {
+                    tab_id,
+                    url: url.map(CefString::to_string).unwrap_or_default(),
+                });
+            }
         }
 
         fn on_title_change(&self, _browser: Option<&mut Browser>, title: Option<&CefString>) {
-            emit(CefEvent::Title(
-                title.map(CefString::to_string).unwrap_or_default(),
-            ));
+            if let Some(tab_id) = tab_of(_browser.as_deref()) {
+                emit(CefEvent::Title {
+                    tab_id,
+                    title: title.map(CefString::to_string).unwrap_or_default(),
+                });
+            }
+        }
+
+        fn on_favicon_urlchange(
+            &self,
+            browser: Option<&mut Browser>,
+            icon_urls: Option<&mut CefStringList>,
+        ) {
+            let Some(tab_id) = tab_of(browser.as_deref()) else {
+                return;
+            };
+            let Some(url) = pick_favicon_url(icon_urls) else {
+                emit(CefEvent::Favicon {
+                    tab_id,
+                    bytes: Vec::new(),
+                });
+                return;
+            };
+            let Some(host) = browser.as_deref().and_then(Browser::host) else {
+                return;
+            };
+            let mut callback = FaviconDownloadCallback::new(tab_id);
+            host.download_image(
+                Some(&CefString::from(url.as_str())),
+                1,  // is_favicon
+                32, // max DIP size
+                0,  // use cache
+                Some(&mut callback),
+            );
+        }
+    }
+}
+
+fn pick_favicon_url(icon_urls: Option<&mut CefStringList>) -> Option<String> {
+    let list = icon_urls?;
+    let raw: *mut sys::_cef_string_list_t = (&mut *list).into();
+    if raw.is_null() {
+        return None;
+    }
+    unsafe {
+        let count = sys::cef_string_list_size(raw);
+        let mut best = None;
+        for i in 0..count {
+            let mut value = std::mem::zeroed();
+            if sys::cef_string_list_value(raw, i, &mut value) != 0 {
+                let url = CefString::from(std::ptr::from_ref(&value)).to_string();
+                if !url.is_empty() {
+                    // Prefer the last URL — CEF usually lists larger icons last.
+                    best = Some(url);
+                }
+            }
+        }
+        best
+    }
+}
+
+wrap_download_image_callback! {
+    struct FaviconDownloadCallback {
+        tab_id: u64,
+    }
+
+    impl DownloadImageCallback {
+        fn on_download_image_finished(
+            &self,
+            _image_url: Option<&CefString>,
+            http_status_code: i32,
+            image: Option<&mut Image>,
+        ) {
+            if http_status_code != 200 {
+                return;
+            }
+            let Some(image) = image else {
+                return;
+            };
+            let mut width = 0;
+            let mut height = 0;
+            let Some(png) = image.as_png(1.0, 1, Some(&mut width), Some(&mut height)) else {
+                return;
+            };
+            let size = png.size();
+            if size == 0 {
+                return;
+            }
+            let mut buf = vec![0u8; size];
+            png.data(Some(&mut buf), 0);
+            emit(CefEvent::Favicon {
+                tab_id: self.tab_id,
+                bytes: buf,
+            });
         }
     }
 }

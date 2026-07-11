@@ -892,11 +892,31 @@ impl PlatformWindow for WindowsWindow {
     fn zoom(&self) {
         unsafe {
             if IsWindowVisible(self.0.hwnd).as_bool() {
-                ShowWindowAsync(self.0.hwnd, SW_MAXIMIZE).ok().log_err();
+                // Toggle maximize/restore — matching the native HTMAXBUTTON path.
+                let cmd = if self.state.is_maximized() {
+                    SW_NORMAL
+                } else {
+                    SW_MAXIMIZE
+                };
+                ShowWindowAsync(self.0.hwnd, cmd).ok().log_err();
             } else if let Some(mut status) = self.state.initial_placement.take() {
                 status.state = WindowOpenState::Maximized;
                 self.state.initial_placement.set(Some(status));
             }
+        }
+    }
+
+    fn start_window_move(&self) {
+        // Custom chrome: release capture and ask Windows to start a caption drag.
+        // This also restores-then-moves when the window is maximized.
+        unsafe {
+            let _ = ReleaseCapture();
+            let _ = PostMessageW(
+                Some(self.0.hwnd),
+                WM_NCLBUTTONDOWN,
+                WPARAM(HTCAPTION as usize),
+                LPARAM(0),
+            );
         }
     }
 

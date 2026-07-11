@@ -1,11 +1,30 @@
 import { useState, type FormEvent } from "react";
 import { useTranslation } from "react-i18next";
-import { IconPlus, IconSearch } from "@tabler/icons-react";
+import {
+  IconLoader2,
+  IconPlus,
+  IconSearch,
+  IconShieldCheck,
+  IconShieldX,
+} from "@tabler/icons-react";
+import { Link } from "react-router-dom";
 import { NTP_SHORTCUTS } from "../data/managers";
+import {
+  useAdblockFilterStatus,
+  useAdblockStatistics,
+} from "../adblockStats";
 
 export function NewTabPage() {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
+  const statistics = useAdblockStatistics();
+  const filterStatus = useAdblockFilterStatus();
+  const protectionLabel =
+    filterStatus.state === "active"
+      ? t("ntp.protection.active", { count: filterStatus.listsLoaded })
+      : filterStatus.state === "error"
+        ? t("ntp.protection.error")
+        : t("ntp.protection.loading");
 
   const onSubmit = (e: FormEvent) => {
     e.preventDefault();
@@ -42,7 +61,43 @@ export function NewTabPage() {
           </label>
         </form>
 
-        <div className="mt-12 grid w-full grid-cols-4 gap-x-6 gap-y-8 sm:grid-cols-4">
+        <Link
+          to="/adblock"
+          className="mt-5 flex w-full items-center gap-3 rounded-2xl border border-shell-border/80 bg-shell-elevated px-4 py-3 transition-colors hover:border-shell-accent/70 hover:bg-shell-hover"
+          aria-live="polite"
+        >
+          <span
+            className={[
+              "flex size-10 shrink-0 items-center justify-center rounded-xl",
+              filterStatus.state === "active"
+                ? "bg-shell-accent-dim text-shell-accent"
+                : filterStatus.state === "error"
+                  ? "bg-shell-danger/10 text-shell-danger"
+                  : "bg-shell-hover text-shell-muted",
+            ].join(" ")}
+          >
+            {filterStatus.state === "active" ? (
+              <IconShieldCheck size={20} stroke={1.7} />
+            ) : filterStatus.state === "error" ? (
+              <IconShieldX size={20} stroke={1.7} />
+            ) : (
+              <IconLoader2 size={20} stroke={1.7} className="animate-spin" />
+            )}
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block text-xs text-shell-muted">
+              {t("ntp.protection.blocked")}
+            </span>
+            <span className="block truncate text-[12px] text-shell-muted">
+              {protectionLabel}
+            </span>
+          </span>
+          <span className="tabular-nums text-2xl text-shell-text">
+            {statistics.totalBlocked.toLocaleString()}
+          </span>
+        </Link>
+
+        <div className="mt-9 grid w-full grid-cols-4 gap-x-6 gap-y-8 sm:grid-cols-4">
           {NTP_SHORTCUTS.map((item) => (
             <a
               key={item.id}

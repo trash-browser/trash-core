@@ -913,6 +913,12 @@
     "tagline": "Search the web or open a shortcut",
     "searchPlaceholder": "Search or enter website name",
     "addShortcut": "Add shortcut",
+    "protection": {
+      "blocked": "Requests blocked",
+      "active": "Protection active · {{count}} lists loaded",
+      "loading": "Loading protection lists…",
+      "error": "Protection lists unavailable"
+    },
     "shortcuts": {
       "apple": "Apple",
       "wiki": "Wikipedia",
@@ -959,8 +965,11 @@
     "subtitle": "Block ads, trackers, and annoyances",
     "stats": {
       "blocked": "Requests blocked",
-      "rules": "Active rules",
-      "lists": "Lists on"
+      "today": "Blocked today",
+      "sevenDays": "Last 7 days",
+      "byType": "Blocked by resource type",
+      "noData": "No blocked requests recorded yet",
+      "recordingUnavailable": "Statistics recording unavailable"
     },
     "enable": {
       "title": "Enable ad blocking",

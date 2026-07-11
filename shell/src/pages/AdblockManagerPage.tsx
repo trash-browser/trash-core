@@ -1,8 +1,14 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { IconPlus, IconRefresh, IconShieldOff } from "@tabler/icons-react";
 import { MOCK_FILTER_LISTS } from "../data/managers";
 import { Toggle } from "../components/Toggle";
+import { useAdblockStatistics } from "../adblockStats";
+
+function resourceTypeLabel(resourceType: string) {
+  const words = resourceType.replace(/([a-z])([A-Z])/g, "$1 $2");
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
 
 export function AdblockManagerPage() {
   const { t } = useTranslation();
@@ -14,13 +20,11 @@ export function AdblockManagerPage() {
     "||tracker.example^",
     "@@||trusted.partner.example^",
   ]);
-
-  const activeRules = useMemo(() => {
-    const fromLists = lists
-      .filter((l) => l.enabled)
-      .reduce((sum, l) => sum + Number(l.rules.replace(/,/g, "")), 0);
-    return fromLists + customRules.length;
-  }, [lists, customRules]);
+  const statistics = useAdblockStatistics();
+  const largestResourceCount = Math.max(
+    1,
+    ...statistics.byResource.map((resource) => resource.total),
+  );
 
   const toggleList = (id: string, on: boolean) =>
     setLists((prev) =>
@@ -50,21 +54,64 @@ export function AdblockManagerPage() {
         <div className="mb-4 grid gap-4 sm:grid-cols-3">
           <div className="rounded-xl border border-shell-border/80 bg-shell-elevated px-5 py-4">
             <div className="text-xs text-shell-muted">{t("adblock.stats.blocked")}</div>
-            <div className="mt-1 text-2xl text-shell-text">128,440</div>
-          </div>
-          <div className="rounded-xl border border-shell-border/80 bg-shell-elevated px-5 py-4">
-            <div className="text-xs text-shell-muted">{t("adblock.stats.rules")}</div>
             <div className="mt-1 text-2xl text-shell-text">
-              {activeRules.toLocaleString()}
+              {statistics.totalBlocked.toLocaleString()}
             </div>
           </div>
           <div className="rounded-xl border border-shell-border/80 bg-shell-elevated px-5 py-4">
-            <div className="text-xs text-shell-muted">{t("adblock.stats.lists")}</div>
+            <div className="text-xs text-shell-muted">{t("adblock.stats.today")}</div>
             <div className="mt-1 text-2xl text-shell-text">
-              {lists.filter((l) => l.enabled).length}/{lists.length}
+              {statistics.blockedToday.toLocaleString()}
+            </div>
+          </div>
+          <div className="rounded-xl border border-shell-border/80 bg-shell-elevated px-5 py-4">
+            <div className="text-xs text-shell-muted">
+              {t("adblock.stats.sevenDays")}
+            </div>
+            <div className="mt-1 text-2xl text-shell-text">
+              {statistics.blockedLastSevenDays.toLocaleString()}
             </div>
           </div>
         </div>
+
+        <section className="mb-4 rounded-xl border border-shell-border/80 bg-shell-elevated px-5 py-4">
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <h2 className="text-sm text-shell-text">{t("adblock.stats.byType")}</h2>
+            {!statistics.recording ? (
+              <span className="text-[11px] text-shell-danger">
+                {t("adblock.stats.recordingUnavailable")}
+              </span>
+            ) : null}
+          </div>
+          {statistics.byResource.length === 0 ? (
+            <div className="py-4 text-center text-xs text-shell-muted">
+              {t("adblock.stats.noData")}
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {statistics.byResource.map((resource) => (
+                <div key={resource.resourceType}>
+                  <div className="mb-1 flex items-center justify-between gap-4 text-xs">
+                    <span className="text-shell-muted">
+                      {resourceTypeLabel(resource.resourceType)}
+                    </span>
+                    <span className="tabular-nums text-shell-text">
+                      {resource.total.toLocaleString()}
+                    </span>
+                  </div>
+                  <div className="h-1.5 overflow-hidden rounded-full bg-shell-track/50">
+                    <div
+                      className="h-full rounded-full bg-shell-accent"
+                      style={{
+                        width: `${Math.max(2, (resource.total / largestResourceCount) * 100)}%`,
+                      }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
 
         <section className="mb-4 overflow-hidden rounded-xl border border-shell-border/80 bg-shell-elevated">
           <div className="flex items-center gap-4 px-5 py-3.5">
