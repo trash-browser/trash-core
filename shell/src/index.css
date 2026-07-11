@@ -1,0 +1,106 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", "Segoe UI", system-ui, sans-serif;
+
+  --color-shell: #202124;
+  --color-shell-elevated: #292a2d;
+  --color-shell-hover: #3c4043;
+  --color-shell-active: #3c4043;
+  --color-shell-border: #3c4043;
+  --color-shell-text: #e8eaed;
+  --color-shell-muted: #9aa0a6;
+  --color-shell-accent: #8ab4f8;
+  --color-shell-accent-dim: #8ab4f822;
+  --color-shell-danger: #f28b82;
+  --color-shell-ok: #81c995;
+  --color-shell-track: #5f6368;
+  --color-shell-thumb: #8ab4f8;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+    max-height: 100%;
+    overflow: hidden;
+  }
+
+  body {
+    margin: 0;
+    font-family: var(--font-sans);
+    background: var(--color-shell);
+    color: var(--color-shell-text);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  #root {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    min-width: 0;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  button,
+  input {
+    font: inherit;
+  }
+
+  /* Chromium-style thin scrollbars */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-shell-track) transparent;
+  }
+
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background-color: var(--color-shell-track);
+    border-radius: 999px;
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: var(--color-shell-muted);
+    border: 2px solid transparent;
+    background-clip: content-box;
+  }
+
+  *::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+}
+
+/* Transparent host window for CEF/Rust overlay popups */
+html.overlay-mode,
+html.overlay-mode body,
+html.overlay-mode #root {
+  background: transparent !important;
+  overflow: hidden;
+}
+
+body.overlay-mode {
+  background: transparent !important;
+}
+
+.overlay-root {
+  position: relative;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: transparent;
+}

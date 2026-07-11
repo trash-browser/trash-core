@@ -1,0 +1,1061 @@
+{
+  "shell": {
+    "settings": "Settings",
+    "product": "Trash Browser",
+    "searchPlaceholder": "Search settings",
+    "clearSearch": "Clear search",
+    "noMatch": "No settings match “{{query}}”",
+    "language": "Language"
+  },
+  "nav": {
+    "you": "You and Trash",
+    "autofill": "Autofill and passwords",
+    "privacy": "Privacy and security",
+    "appearance": "Appearance",
+    "search": "Search engine",
+    "default": "Default browser",
+    "startup": "On startup",
+    "languages": "Languages",
+    "downloads": "Downloads",
+    "a11y": "Accessibility",
+    "system": "System",
+    "reset": "Reset settings",
+    "about": "About Trash Browser"
+  },
+  "pages": {
+    "you": {
+      "title": "You and Trash",
+      "description": "Sign in to sync bookmarks, passwords, and settings across devices.",
+      "sync": {
+        "title": "Turn on sync",
+        "description": "Not signed in"
+      },
+      "services": {
+        "title": "Trash services",
+        "description": "Manage connected services and account features"
+      }
+    },
+    "autofill": {
+      "title": "Autofill and passwords",
+      "passwordManager": {
+        "title": "Password Manager",
+        "description": "Saved passwords and passkeys"
+      },
+      "payment": {
+        "title": "Payment methods",
+        "description": "Save and fill payment methods"
+      },
+      "addresses": {
+        "title": "Addresses and more",
+        "description": "Save and fill addresses"
+      }
+    },
+    "privacy": {
+      "title": "Privacy and security",
+      "clear": {
+        "title": "Delete browsing data",
+        "description": "Clear history, cookies, cache, and more"
+      },
+      "cookies": {
+        "title": "Third-party cookies",
+        "description": "Block third-party cookies in Incognito"
+      },
+      "safeBrowsing": {
+        "title": "Safe Browsing",
+        "description": "Protection against dangerous sites",
+        "value": "Enhanced protection"
+      },
+      "siteSettings": {
+        "title": "Site settings",
+        "description": "Controls for cookies, location, camera, and more"
+      }
+    },
+    "appearance": {
+      "title": "Appearance",
+      "theme": {
+        "title": "Mode",
+        "description": "Device · Light · Dark",
+        "value": "Dark"
+      },
+      "homeButton": {
+        "title": "Show home button"
+      },
+      "bookmarksBar": {
+        "title": "Show bookmarks bar"
+      },
+      "fontSize": {
+        "title": "Font size",
+        "value": "Medium (Recommended)"
+      },
+      "zoom": {
+        "title": "Page zoom",
+        "value": "100%"
+      }
+    },
+    "search": {
+      "title": "Search engine",
+      "description": "Search engine used in the address bar",
+      "engine": {
+        "title": "Search engine",
+        "value": "Bing"
+      },
+      "manage": {
+        "title": "Manage search engines and site search"
+      }
+    },
+    "default": {
+      "title": "Default browser",
+      "makeDefault": {
+        "title": "Default browser",
+        "description": "Trash Browser is not your default browser",
+        "action": "Make default"
+      }
+    },
+    "startup": {
+      "title": "On startup",
+      "openNewTab": {
+        "title": "Open the New Tab page"
+      },
+      "continue": {
+        "title": "Continue where you left off"
+      },
+      "specific": {
+        "title": "Open a specific page or set of pages"
+      }
+    },
+    "languages": {
+      "title": "Languages",
+      "preferred": {
+        "title": "Preferred languages",
+        "description": "English (United States)",
+        "pickerHint": "Choose the language for Trash Browser settings and UI."
+      },
+      "spellcheck": {
+        "title": "Spell check"
+      },
+      "translate": {
+        "title": "Offer to translate pages"
+      }
+    },
+    "downloads": {
+      "title": "Downloads",
+      "location": {
+        "title": "Location",
+        "description": "C:\\Users\\Downloads",
+        "action": "Change"
+      },
+      "ask": {
+        "title": "Ask where to save each file before downloading"
+      }
+    },
+    "a11y": {
+      "title": "Accessibility",
+      "captions": {
+        "title": "Captions"
+      },
+      "highlight": {
+        "title": "Show a quick highlight on the focused object"
+      },
+      "tabHover": {
+        "title": "Show tab hover cards"
+      }
+    },
+    "system": {
+      "title": "System",
+      "hw": {
+        "title": "Use hardware acceleration when available"
+      },
+      "bg": {
+        "title": "Continue running background apps when Trash Browser is closed"
+      },
+      "proxy": {
+        "title": "Open your computer's proxy settings"
+      }
+    },
+    "reset": {
+      "title": "Reset settings",
+      "description": "Restore settings to their original defaults",
+      "restore": {
+        "title": "Restore settings to their original defaults",
+        "description": "This will reset your startup page, new tab page, search engine, and pinned tabs",
+        "action": "Reset settings"
+      }
+    },
+    "about": {
+      "title": "About Trash Browser",
+      "version": {
+        "title": "Trash Browser",
+        "description": "Version 0.1.0 (Official Build) · Skia chrome · WebView2 · DWM",
+        "action": "Up to date"
+      },
+      "help": {
+        "title": "Help"
+      }
+    }
+  },
+  "langs": {
+    "en": "English",
+    "th": "ไทย",
+    "zh": "中文",
+    "ja": "日本語"
+  },
+  "sub": {
+    "common": {
+      "back": "Back",
+      "body": "Configure “{{title}}” for Trash Browser.",
+      "option": "Option {{id}}"
+    },
+    "you": {
+      "sync": {
+        "body": "Sync bookmarks, passwords, and settings when you sign in to Trash.",
+        "options": {
+          "a": {
+            "title": "Primary option",
+            "description": "Recommended for most people"
+          },
+          "b": {
+            "title": "Additional control",
+            "description": "Fine-tune this feature"
+          },
+          "c": {
+            "title": "Advanced",
+            "description": "More detailed preferences"
+          },
+          "toggle": {
+            "title": "Enable this setting",
+            "description": "Turn this feature on or off"
+          }
+        }
+      },
+      "services": {
+        "body": "Manage Trash account services connected to this browser profile.",
+        "options": {
+          "a": {
+            "title": "Primary option",
+            "description": "Recommended for most people"
+          },
+          "b": {
+            "title": "Additional control",
+            "description": "Fine-tune this feature"
+          },
+          "c": {
+            "title": "Advanced",
+            "description": "More detailed preferences"
+          },
+          "toggle": {
+            "title": "Enable this setting",
+            "description": "Turn this feature on or off"
+          }
+        }
+      }
+    },
+    "autofill": {
+      "password-manager": {
+        "body": "View and manage saved passwords and passkeys.",
+        "options": {
+          "a": {
+            "title": "Primary option",
+            "description": "Recommended for most people"
+          },
+          "b": {
+            "title": "Additional control",
+            "description": "Fine-tune this feature"
+          },
+          "c": {
+            "title": "Advanced",
+            "description": "More detailed preferences"
+          },
+          "toggle": {
+            "title": "Enable this setting",
+            "description": "Turn this feature on or off"
+          }
+        }
+      },
+      "payment": {
+        "body": "Save cards and fill payment forms automatically.",
+        "options": {
+          "a": {
+            "title": "Primary option",
+            "description": "Recommended for most people"
+          },
+          "b": {
+            "title": "Additional control",
+            "description": "Fine-tune this feature"
+          },
+          "c": {
+            "title": "Advanced",
+            "description": "More detailed preferences"
+          },
+          "toggle": {
+            "title": "Enable this setting",
+            "description": "Turn this feature on or off"
+          }
+        }
+      },
+      "addresses": {
+        "body": "Save addresses for faster checkout and forms.",
+        "options": {
+          "a": {
+            "title": "Primary option",
+            "description": "Recommended for most people"
+          },
+          "b": {
+            "title": "Additional control",
+            "description": "Fine-tune this feature"
+          },
+          "c": {
+            "title": "Advanced",
+            "description": "More detailed preferences"
+          },
+          "toggle": {
+            "title": "Enable this setting",
+            "description": "Turn this feature on or off"
+          }
+        }
+      }
+    },
+    "privacy": {
+      "clear": {
+        "body": "Choose a time range and data types to delete from this device.",
+        "options": {
+          "lastHour": {
+            "title": "Last hour"
+          },
+          "lastDay": {
+            "title": "Last 24 hours"
+          },
+          "allTime": {
+            "title": "All time"
+          }
+        }
+      },
+      "cookies": {
+        "body": "Control whether sites can use third-party cookies.",
+        "options": {
+          "a": {
+            "title": "Primary option",
+            "description": "Recommended for most people"
+          },
+          "b": {
+            "title": "Additional control",
+            "description": "Fine-tune this feature"
+          },
+          "c": {
+            "title": "Advanced",
+            "description": "More detailed preferences"
+          },
+          "toggle": {
+            "title": "Enable this setting",
+            "description": "Turn this feature on or off"
+          }
+        }
+      },
+      "safe-browsing": {
+        "body": "Choose how strongly Trash protects you from unsafe sites.",
+        "options": {
+          "enhanced": {
+            "title": "Enhanced protection",
+            "description": "Proactive protection against dangerous sites"
+          },
+          "standard": {
+            "title": "Standard protection",
+            "description": "Protects against known dangerous sites"
+          },
+          "off": {
+            "title": "No protection (not recommended)",
+            "description": "You will not get Safe Browsing warnings"
+          }
+        }
+      },
+      "site-settings": {
+        "body": "Permissions for camera, mic, location, notifications, and more.",
+        "options": {
+          "a": {
+            "title": "Primary option",
+            "description": "Recommended for most people"
+          },
+          "b": {
+            "title": "Additional control",
+            "description": "Fine-tune this feature"
+          },
+          "c": {
+            "title": "Advanced",
+            "description": "More detailed preferences"
+          },
+          "toggle": {
+            "title": "Enable this setting",
+            "description": "Turn this feature on or off"
+          }
+        }
+      }
+    },
+    "appearance": {
+      "theme": {
+        "body": "Choose light, dark, or follow your device theme.",
+        "options": {
+          "device": {
+            "title": "Device",
+            "description": "Match your system appearance"
+          },
+          "light": {
+            "title": "Light",
+            "description": "Light backgrounds and dark text"
+          },
+          "dark": {
+            "title": "Dark",
+            "description": "Dark backgrounds and light text"
+          }
+        }
+      },
+      "toolbar": {
+        "body": "Show or hide the Home button on the toolbar.",
+        "options": {
+          "a": {
+            "title": "Primary option",
+            "description": "Recommended for most people"
+          },
+          "b": {
+            "title": "Additional control",
+            "description": "Fine-tune this feature"
+          },
+          "c": {
+            "title": "Advanced",
+            "description": "More detailed preferences"
+          },
+          "toggle": {
+            "title": "Enable this setting",
+            "description": "Turn this feature on or off"
+          }
+        }
+      },
+      "bookmarks-bar": {
+        "body": "Show the bookmarks bar below the address bar.",
+        "options": {
+          "a": {
+            "title": "Primary option",
+            "description": "Recommended for most people"
+          },
+          "b": {
+            "title": "Additional control",
+            "description": "Fine-tune this feature"
+          },
+          "c": {
+            "title": "Advanced",
+            "description": "More detailed preferences"
+          },
+          "toggle": {
+            "title": "Enable this setting",
+            "description": "Turn this feature on or off"
+          }
+        }
+      },
+      "font-size": {
+        "body": "Adjust the default font size for web pages.",
+        "options": {
+          "small": {
+            "title": "Small"
+          },
+          "medium": {
+            "title": "Medium (Recommended)"
+          },
+          "large": {
+            "title": "Large"
+          },
+          "xlarge": {
+            "title": "Very large"
+          }
+        }
+      },
+      "zoom": {
+        "body": "Set the default zoom level for web pages.",
+        "options": {
+          "a": {
+            "title": "Primary option",
+            "description": "Recommended for most people"
+          },
+          "b": {
+            "title": "Additional control",
+            "description": "Fine-tune this feature"
+          },
+          "c": {
+            "title": "Advanced",
+            "description": "More detailed preferences"
+          },
+          "toggle": {
+            "title": "Enable this setting",
+            "description": "Turn this feature on or off"
+          }
+        }
+      }
+    },
+    "search": {
+      "engine": {
+        "body": "Pick the search engine used from the address bar.",
+        "options": {
+          "bing": {
+            "title": "Bing"
+          },
+          "google": {
+            "title": "Google"
+          },
+          "duckduckgo": {
+            "title": "DuckDuckGo"
+          }
+        }
+      },
+      "manage": {
+        "body": "Add, edit, or remove search engines and site search shortcuts.",
+        "options": {
+          "a": {
+            "title": "Primary option",
+            "description": "Recommended for most people"
+          },
+          "b": {
+            "title": "Additional control",
+            "description": "Fine-tune this feature"
+          },
+          "c": {
+            "title": "Advanced",
+            "description": "More detailed preferences"
+          },
+          "toggle": {
+            "title": "Enable this setting",
+            "description": "Turn this feature on or off"
+          }
+        }
+      }
+    },
+    "default": {
+      "make-default": {
+        "body": "Make Trash Browser open links from other apps by default.",
+        "options": {
+          "a": {
+            "title": "Primary option",
+            "description": "Recommended for most people"
+          },
+          "b": {
+            "title": "Additional control",
+            "description": "Fine-tune this feature"
+          },
+          "c": {
+            "title": "Advanced",
+            "description": "More detailed preferences"
+          },
+          "toggle": {
+            "title": "Enable this setting",
+            "description": "Turn this feature on or off"
+          }
+        }
+      }
+    },
+    "startup": {
+      "open": {
+        "body": "Open a fresh New Tab page every time Trash starts.",
+        "options": {
+          "a": {
+            "title": "Primary option",
+            "description": "Recommended for most people"
+          },
+          "b": {
+            "title": "Additional control",
+            "description": "Fine-tune this feature"
+          },
+          "c": {
+            "title": "Advanced",
+            "description": "More detailed preferences"
+          },
+          "toggle": {
+            "title": "Enable this setting",
+            "description": "Turn this feature on or off"
+          }
+        }
+      },
+      "continue": {
+        "body": "Restore windows and tabs from your last session.",
+        "options": {
+          "a": {
+            "title": "Primary option",
+            "description": "Recommended for most people"
+          },
+          "b": {
+            "title": "Additional control",
+            "description": "Fine-tune this feature"
+          },
+          "c": {
+            "title": "Advanced",
+            "description": "More detailed preferences"
+          },
+          "toggle": {
+            "title": "Enable this setting",
+            "description": "Turn this feature on or off"
+          }
+        }
+      },
+      "specific": {
+        "body": "Choose one or more pages to open on startup.",
+        "options": {
+          "a": {
+            "title": "Primary option",
+            "description": "Recommended for most people"
+          },
+          "b": {
+            "title": "Additional control",
+            "description": "Fine-tune this feature"
+          },
+          "c": {
+            "title": "Advanced",
+            "description": "More detailed preferences"
+          },
+          "toggle": {
+            "title": "Enable this setting",
+            "description": "Turn this feature on or off"
+          }
+        }
+      }
+    },
+    "languages": {
+      "preferred": {
+        "body": "Choose the language used for Trash Browser settings and UI.",
+        "options": {}
+      },
+      "spellcheck": {
+        "body": "Check spelling as you type in web forms.",
+        "options": {
+          "a": {
+            "title": "Primary option",
+            "description": "Recommended for most people"
+          },
+          "b": {
+            "title": "Additional control",
+            "description": "Fine-tune this feature"
+          },
+          "c": {
+            "title": "Advanced",
+            "description": "More detailed preferences"
+          },
+          "toggle": {
+            "title": "Enable this setting",
+            "description": "Turn this feature on or off"
+          }
+        }
+      },
+      "translate": {
+        "body": "Offer to translate pages written in other languages.",
+        "options": {
+          "a": {
+            "title": "Primary option",
+            "description": "Recommended for most people"
+          },
+          "b": {
+            "title": "Additional control",
+            "description": "Fine-tune this feature"
+          },
+          "c": {
+            "title": "Advanced",
+            "description": "More detailed preferences"
+          },
+          "toggle": {
+            "title": "Enable this setting",
+            "description": "Turn this feature on or off"
+          }
+        }
+      }
+    },
+    "downloads": {
+      "location": {
+        "body": "Choose the folder where downloads are saved.",
+        "options": {
+          "a": {
+            "title": "Primary option",
+            "description": "Recommended for most people"
+          },
+          "b": {
+            "title": "Additional control",
+            "description": "Fine-tune this feature"
+          },
+          "c": {
+            "title": "Advanced",
+            "description": "More detailed preferences"
+          },
+          "toggle": {
+            "title": "Enable this setting",
+            "description": "Turn this feature on or off"
+          }
+        }
+      },
+      "ask": {
+        "body": "Ask for a save location before each download starts.",
+        "options": {
+          "a": {
+            "title": "Primary option",
+            "description": "Recommended for most people"
+          },
+          "b": {
+            "title": "Additional control",
+            "description": "Fine-tune this feature"
+          },
+          "c": {
+            "title": "Advanced",
+            "description": "More detailed preferences"
+          },
+          "toggle": {
+            "title": "Enable this setting",
+            "description": "Turn this feature on or off"
+          }
+        }
+      }
+    },
+    "a11y": {
+      "captions": {
+        "body": "Customize caption preferences for media.",
+        "options": {
+          "a": {
+            "title": "Primary option",
+            "description": "Recommended for most people"
+          },
+          "b": {
+            "title": "Additional control",
+            "description": "Fine-tune this feature"
+          },
+          "c": {
+            "title": "Advanced",
+            "description": "More detailed preferences"
+          },
+          "toggle": {
+            "title": "Enable this setting",
+            "description": "Turn this feature on or off"
+          }
+        }
+      },
+      "highlight": {
+        "body": "Draw a highlight around the focused control.",
+        "options": {
+          "a": {
+            "title": "Primary option",
+            "description": "Recommended for most people"
+          },
+          "b": {
+            "title": "Additional control",
+            "description": "Fine-tune this feature"
+          },
+          "c": {
+            "title": "Advanced",
+            "description": "More detailed preferences"
+          },
+          "toggle": {
+            "title": "Enable this setting",
+            "description": "Turn this feature on or off"
+          }
+        }
+      },
+      "tab-hover": {
+        "body": "Show a preview card when hovering a tab.",
+        "options": {
+          "a": {
+            "title": "Primary option",
+            "description": "Recommended for most people"
+          },
+          "b": {
+            "title": "Additional control",
+            "description": "Fine-tune this feature"
+          },
+          "c": {
+            "title": "Advanced",
+            "description": "More detailed preferences"
+          },
+          "toggle": {
+            "title": "Enable this setting",
+            "description": "Turn this feature on or off"
+          }
+        }
+      }
+    },
+    "system": {
+      "hw": {
+        "body": "Use the GPU to improve page and video performance.",
+        "options": {
+          "a": {
+            "title": "Primary option",
+            "description": "Recommended for most people"
+          },
+          "b": {
+            "title": "Additional control",
+            "description": "Fine-tune this feature"
+          },
+          "c": {
+            "title": "Advanced",
+            "description": "More detailed preferences"
+          },
+          "toggle": {
+            "title": "Enable this setting",
+            "description": "Turn this feature on or off"
+          }
+        }
+      },
+      "bg": {
+        "body": "Allow Trash processes to keep running after the window closes.",
+        "options": {
+          "a": {
+            "title": "Primary option",
+            "description": "Recommended for most people"
+          },
+          "b": {
+            "title": "Additional control",
+            "description": "Fine-tune this feature"
+          },
+          "c": {
+            "title": "Advanced",
+            "description": "More detailed preferences"
+          },
+          "toggle": {
+            "title": "Enable this setting",
+            "description": "Turn this feature on or off"
+          }
+        }
+      },
+      "proxy": {
+        "body": "Open your operating system proxy configuration.",
+        "options": {
+          "a": {
+            "title": "Primary option",
+            "description": "Recommended for most people"
+          },
+          "b": {
+            "title": "Additional control",
+            "description": "Fine-tune this feature"
+          },
+          "c": {
+            "title": "Advanced",
+            "description": "More detailed preferences"
+          },
+          "toggle": {
+            "title": "Enable this setting",
+            "description": "Turn this feature on or off"
+          }
+        }
+      }
+    },
+    "reset": {
+      "restore": {
+        "body": "Reset selected settings back to Trash Browser defaults.",
+        "options": {
+          "a": {
+            "title": "Primary option",
+            "description": "Recommended for most people"
+          },
+          "b": {
+            "title": "Additional control",
+            "description": "Fine-tune this feature"
+          },
+          "c": {
+            "title": "Advanced",
+            "description": "More detailed preferences"
+          },
+          "toggle": {
+            "title": "Enable this setting",
+            "description": "Turn this feature on or off"
+          }
+        }
+      }
+    },
+    "about": {
+      "version": {
+        "body": "Version details and update status for this installation.",
+        "options": {
+          "a": {
+            "title": "Primary option",
+            "description": "Recommended for most people"
+          },
+          "b": {
+            "title": "Additional control",
+            "description": "Fine-tune this feature"
+          },
+          "c": {
+            "title": "Advanced",
+            "description": "More detailed preferences"
+          },
+          "toggle": {
+            "title": "Enable this setting",
+            "description": "Turn this feature on or off"
+          }
+        }
+      },
+      "help": {
+        "body": "Get help docs, tips, and support resources.",
+        "options": {
+          "a": {
+            "title": "Primary option",
+            "description": "Recommended for most people"
+          },
+          "b": {
+            "title": "Additional control",
+            "description": "Fine-tune this feature"
+          },
+          "c": {
+            "title": "Advanced",
+            "description": "More detailed preferences"
+          },
+          "toggle": {
+            "title": "Enable this setting",
+            "description": "Turn this feature on or off"
+          }
+        }
+      }
+    }
+  },
+  "chrome": {
+    "newTab": "New Tab",
+    "downloads": "Downloads",
+    "adblock": "Ad-block",
+    "settings": "Settings"
+  },
+  "ntp": {
+    "tagline": "Search the web or open a shortcut",
+    "searchPlaceholder": "Search or enter website name",
+    "addShortcut": "Add shortcut",
+    "shortcuts": {
+      "apple": "Apple",
+      "wiki": "Wikipedia",
+      "github": "GitHub",
+      "bing": "Bing",
+      "youtube": "YouTube",
+      "mail": "Mail",
+      "maps": "Maps",
+      "news": "News"
+    }
+  },
+  "downloadsMgr": {
+    "title": "Downloads",
+    "subtitle": "Files saved with Trash Browser",
+    "search": "Search downloads",
+    "clearCompleted": "Clear completed",
+    "empty": "No downloads match your filters",
+    "filters": {
+      "all": "All",
+      "progress": "In progress",
+      "complete": "Completed",
+      "paused": "Paused",
+      "failed": "Failed"
+    },
+    "status": {
+      "complete": "Completed",
+      "progress": "Downloading",
+      "paused": "Paused",
+      "failed": "Failed"
+    },
+    "actions": {
+      "resume": "Resume",
+      "remove": "Remove"
+    },
+    "time": {
+      "now": "Just now",
+      "today": "Today",
+      "yesterday": "Yesterday",
+      "week": "This week"
+    }
+  },
+  "adblock": {
+    "title": "Ad-block",
+    "subtitle": "Block ads, trackers, and annoyances",
+    "stats": {
+      "blocked": "Requests blocked",
+      "rules": "Active rules",
+      "lists": "Lists on"
+    },
+    "enable": {
+      "title": "Enable ad blocking",
+      "description": "Filter network requests using enabled lists and custom rules"
+    },
+    "cosmetic": {
+      "title": "Cosmetic filtering",
+      "description": "Hide leftover ad placeholders and overlays on pages"
+    },
+    "listsTitle": "Filter lists",
+    "updateLists": "Update lists",
+    "rulesCount": "{{count}} rules",
+    "customTitle": "Custom rules",
+    "customPlaceholder": "||example.com^",
+    "addRule": "Add",
+    "remove": "Remove",
+    "lists": {
+      "easylist": {
+        "name": "EasyList",
+        "desc": "Primary ads and banners"
+      },
+      "easyprivacy": {
+        "name": "EasyPrivacy",
+        "desc": "Trackers and analytics"
+      },
+      "fanboy": {
+        "name": "Fanboy Annoyances",
+        "desc": "Cookie notices and social widgets"
+      },
+      "trash": {
+        "name": "Trash Protect",
+        "desc": "Extra regional and malware domains"
+      },
+      "updated": {
+        "hours": "Updated 2 hours ago",
+        "today": "Updated today",
+        "days": "Updated 3 days ago"
+      }
+    }
+  },
+  "overlay": {
+    "common": {
+      "cancel": "Cancel",
+      "confirm": "Confirm",
+      "close": "Close"
+    },
+    "download": {
+      "title": "Download file",
+      "askPath": "Ask where to save",
+      "save": "Save"
+    },
+    "permission": {
+      "title": "Permission request",
+      "body": "{{origin}} wants to use this permission",
+      "allow": "Allow",
+      "once": "Allow this time",
+      "block": "Block",
+      "types": {
+        "camera": {
+          "title": "Use your camera"
+        },
+        "microphone": {
+          "title": "Use your microphone"
+        },
+        "location": {
+          "title": "Know your location"
+        },
+        "notifications": {
+          "title": "Show notifications"
+        },
+        "generic": {
+          "title": "Permission request"
+        }
+      }
+    },
+    "confirm": {
+      "title": "Are you sure?",
+      "body": "This action cannot be undone."
+    },
+    "auth": {
+      "title": "Sign in",
+      "body": "{{host}} requires a username and password.",
+      "username": "Username",
+      "password": "Password",
+      "signIn": "Sign in"
+    },
+    "find": {
+      "placeholder": "Find in page"
+    }
+  },
+  "about": {
+    "appVersion": "Version",
+    "cefVersion": "CEF",
+    "chromiumVersion": "Chromium",
+    "tagline": "Version information for this installation",
+    "openChromeSettings": "Open Chrome settings"
+  }
+}

@@ -1,0 +1,20 @@
+[package]
+name = "gpui_python"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+name = "gpui_python"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+gpui.workspace = true
+gpui_platform.workspace = true
+pyo3 = { version = "0.27", features = ["extension-module"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows.workspace = true
+
+[lints]
+workspace = true

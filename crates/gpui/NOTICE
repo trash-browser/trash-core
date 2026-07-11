@@ -1,0 +1,28 @@
+GPUI Standalone Edition
+Copyright 2025 - 2026 arizkami and the GPUI Standalone Edition contributors
+
+This product includes software developed as part of the GPUI framework
+by Zed Industries, Inc.
+
+  GPUI
+  Copyright 2022 - 2025 Zed Industries, Inc.
+  https://github.com/zed-industries/zed
+
+GPUI Standalone Edition is a fork of the GPUI framework, extracted and
+maintained as an independent, standalone crate. The original GPUI is a
+component of the Zed code editor.
+
+This software is licensed under the Apache License, Version 2.0. A copy of
+the license is available in the LICENSE file distributed with this work, and
+at http://www.apache.org/licenses/LICENSE-2.0
+
+The original upstream license and copyright notice are retained in the
+LICENSE-APACHE file.
+
+Modifications made in this fork include, but are not limited to, restructuring
+the framework into standalone workspace crates and adapting it for use outside
+of the Zed editor. Modified files carry notices of the changes where required
+by the Apache License, Version 2.0 (Section 4).
+
+Portions of this software may be subject to additional third-party licenses.
+See the respective source files and dependency manifests for details.

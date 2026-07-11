@@ -1,0 +1,60 @@
+import gpui_python as gpui
+
+WHITE = gpui.rgb(255, 255, 255)
+
+root = (
+    gpui.div()
+    .flex()
+    .flex_col()
+    .gap(12)
+    .bg(0x505050)
+    .size(500)
+    .justify_center()
+    .items_center()
+    .shadow_lg()
+    .border_1()
+    .border_color(gpui.rgb(0, 0, 255))
+    .text_2xl()
+    .text_color(WHITE)
+    .child_text("Hello, World!")
+    .child(
+        gpui.div()
+        .flex()
+        .gap(8)
+        .child(
+            gpui.div()
+            .size(32)
+            .bg(gpui.rgb(255, 0, 0))
+            .border_1()
+            .rounded_md()
+            .border_color(WHITE)
+        )
+        .child(
+            gpui.div()
+            .size(32)
+            .bg(gpui.rgb(0, 255, 0))
+            .border_1()
+            .rounded_md()
+            .border_color(WHITE)
+        )
+        .child(
+            gpui.div()
+            .size(32)
+            .bg(gpui.rgb(0, 0, 255))
+            .border_1()
+            .rounded_md()
+            .border_color(WHITE)
+        )
+        .child(
+            gpui.div()
+            .size(32)
+            .bg(gpui.rgb(255, 255, 0))
+            .border_1()
+            .rounded_md()
+            .border_color(WHITE)
+        )
+    )
+)
+
+
+gpui.run(root, width=500, height=500, title="GPUI Python")

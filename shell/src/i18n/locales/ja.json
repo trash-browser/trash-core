@@ -1,0 +1,1061 @@
+{
+  "shell": {
+    "settings": "設定",
+    "product": "Trash Browser",
+    "searchPlaceholder": "設定を検索",
+    "clearSearch": "検索をクリア",
+    "noMatch": "「{{query}}」に一致する設定はありません",
+    "language": "言語"
+  },
+  "nav": {
+    "you": "あなたと Trash",
+    "autofill": "自動入力とパスワード",
+    "privacy": "プライバシーとセキュリティ",
+    "appearance": "外観",
+    "search": "検索エンジン",
+    "default": "デフォルトのブラウザ",
+    "startup": "起動時",
+    "languages": "言語",
+    "downloads": "ダウンロード",
+    "a11y": "ユーザー補助",
+    "system": "システム",
+    "reset": "設定のリセット",
+    "about": "Trash Browser について"
+  },
+  "pages": {
+    "you": {
+      "title": "あなたと Trash",
+      "description": "ログインすると、ブックマーク、パスワード、設定をデバイス間で同期できます。",
+      "sync": {
+        "title": "同期をオンにする",
+        "description": "ログインしていません"
+      },
+      "services": {
+        "title": "Trash サービス",
+        "description": "接続済みサービスとアカウント機能を管理"
+      }
+    },
+    "autofill": {
+      "title": "自動入力とパスワード",
+      "passwordManager": {
+        "title": "パスワード マネージャー",
+        "description": "保存済みのパスワードとパスキー"
+      },
+      "payment": {
+        "title": "お支払い方法",
+        "description": "お支払い方法を保存して入力"
+      },
+      "addresses": {
+        "title": "住所など",
+        "description": "住所を保存して入力"
+      }
+    },
+    "privacy": {
+      "title": "プライバシーとセキュリティ",
+      "clear": {
+        "title": "閲覧データを削除",
+        "description": "履歴、Cookie、キャッシュなどを消去"
+      },
+      "cookies": {
+        "title": "サードパーティ Cookie",
+        "description": "シークレット モードでサードパーティ Cookie をブロック"
+      },
+      "safeBrowsing": {
+        "title": "セーフ ブラウジング",
+        "description": "危険なサイトからの保護",
+        "value": "強化された保護"
+      },
+      "siteSettings": {
+        "title": "サイトの設定",
+        "description": "Cookie、位置情報、カメラなどの制御"
+      }
+    },
+    "appearance": {
+      "title": "外観",
+      "theme": {
+        "title": "モード",
+        "description": "デバイス · ライト · ダーク",
+        "value": "ダーク"
+      },
+      "homeButton": {
+        "title": "ホームボタンを表示"
+      },
+      "bookmarksBar": {
+        "title": "ブックマーク バーを表示"
+      },
+      "fontSize": {
+        "title": "フォントサイズ",
+        "value": "中（推奨）"
+      },
+      "zoom": {
+        "title": "ページのズーム",
+        "value": "100%"
+      }
+    },
+    "search": {
+      "title": "検索エンジン",
+      "description": "アドレスバーで使用する検索エンジン",
+      "engine": {
+        "title": "検索エンジン",
+        "value": "Bing"
+      },
+      "manage": {
+        "title": "検索エンジンとサイト内検索を管理"
+      }
+    },
+    "default": {
+      "title": "デフォルトのブラウザ",
+      "makeDefault": {
+        "title": "デフォルトのブラウザ",
+        "description": "Trash Browser はデフォルトのブラウザではありません",
+        "action": "デフォルトに設定"
+      }
+    },
+    "startup": {
+      "title": "起動時",
+      "openNewTab": {
+        "title": "新しいタブページを開く"
+      },
+      "continue": {
+        "title": "前回開いていたページを続行"
+      },
+      "specific": {
+        "title": "特定のページまたはページセットを開く"
+      }
+    },
+    "languages": {
+      "title": "言語",
+      "preferred": {
+        "title": "優先言語",
+        "description": "日本語",
+        "pickerHint": "Trash Browser の設定と UI で使用する言語を選択します。"
+      },
+      "spellcheck": {
+        "title": "スペルチェック"
+      },
+      "translate": {
+        "title": "ページの翻訳を提案する"
+      }
+    },
+    "downloads": {
+      "title": "ダウンロード",
+      "location": {
+        "title": "場所",
+        "description": "C:\\Users\\Downloads",
+        "action": "変更"
+      },
+      "ask": {
+        "title": "ダウンロード前に保存場所を確認する"
+      }
+    },
+    "a11y": {
+      "title": "ユーザー補助",
+      "captions": {
+        "title": "キャプション"
+      },
+      "highlight": {
+        "title": "フォーカス中のオブジェクトをすばやくハイライト"
+      },
+      "tabHover": {
+        "title": "タブのホバーカードを表示"
+      }
+    },
+    "system": {
+      "title": "システム",
+      "hw": {
+        "title": "利用可能な場合はハードウェア アクセラレーションを使用"
+      },
+      "bg": {
+        "title": "Trash Browser を閉じた後もバックグラウンド アプリを実行"
+      },
+      "proxy": {
+        "title": "パソコンのプロキシ設定を開く"
+      }
+    },
+    "reset": {
+      "title": "設定のリセット",
+      "description": "設定を元のデフォルトに戻します",
+      "restore": {
+        "title": "設定を元のデフォルトに戻す",
+        "description": "起動ページ、新しいタブ、検索エンジン、固定タブがリセットされます",
+        "action": "設定をリセット"
+      }
+    },
+    "about": {
+      "title": "Trash Browser について",
+      "version": {
+        "title": "Trash Browser",
+        "description": "バージョン 0.1.0（Official Build）· Skia chrome · WebView2 · DWM",
+        "action": "最新です"
+      },
+      "help": {
+        "title": "ヘルプ"
+      }
+    }
+  },
+  "langs": {
+    "en": "English",
+    "th": "ไทย",
+    "zh": "中文",
+    "ja": "日本語"
+  },
+  "sub": {
+    "common": {
+      "back": "戻る",
+      "body": "Trash Browser の「{{title}}」を設定します。",
+      "option": "オプション {{id}}"
+    },
+    "you": {
+      "sync": {
+        "body": "Trash Browser でこの設定を構成します。",
+        "options": {
+          "a": {
+            "title": "主なオプション",
+            "description": "ほとんどのユーザーに推奨"
+          },
+          "b": {
+            "title": "追加のコントロール",
+            "description": "この機能を細かく調整"
+          },
+          "c": {
+            "title": "詳細設定",
+            "description": "より詳しい設定"
+          },
+          "toggle": {
+            "title": "この設定を有効にする",
+            "description": "この機能のオン / オフ"
+          }
+        }
+      },
+      "services": {
+        "body": "Trash Browser でこの設定を構成します。",
+        "options": {
+          "a": {
+            "title": "主なオプション",
+            "description": "ほとんどのユーザーに推奨"
+          },
+          "b": {
+            "title": "追加のコントロール",
+            "description": "この機能を細かく調整"
+          },
+          "c": {
+            "title": "詳細設定",
+            "description": "より詳しい設定"
+          },
+          "toggle": {
+            "title": "この設定を有効にする",
+            "description": "この機能のオン / オフ"
+          }
+        }
+      }
+    },
+    "autofill": {
+      "password-manager": {
+        "body": "Trash Browser でこの設定を構成します。",
+        "options": {
+          "a": {
+            "title": "主なオプション",
+            "description": "ほとんどのユーザーに推奨"
+          },
+          "b": {
+            "title": "追加のコントロール",
+            "description": "この機能を細かく調整"
+          },
+          "c": {
+            "title": "詳細設定",
+            "description": "より詳しい設定"
+          },
+          "toggle": {
+            "title": "この設定を有効にする",
+            "description": "この機能のオン / オフ"
+          }
+        }
+      },
+      "payment": {
+        "body": "Trash Browser でこの設定を構成します。",
+        "options": {
+          "a": {
+            "title": "主なオプション",
+            "description": "ほとんどのユーザーに推奨"
+          },
+          "b": {
+            "title": "追加のコントロール",
+            "description": "この機能を細かく調整"
+          },
+          "c": {
+            "title": "詳細設定",
+            "description": "より詳しい設定"
+          },
+          "toggle": {
+            "title": "この設定を有効にする",
+            "description": "この機能のオン / オフ"
+          }
+        }
+      },
+      "addresses": {
+        "body": "Trash Browser でこの設定を構成します。",
+        "options": {
+          "a": {
+            "title": "主なオプション",
+            "description": "ほとんどのユーザーに推奨"
+          },
+          "b": {
+            "title": "追加のコントロール",
+            "description": "この機能を細かく調整"
+          },
+          "c": {
+            "title": "詳細設定",
+            "description": "より詳しい設定"
+          },
+          "toggle": {
+            "title": "この設定を有効にする",
+            "description": "この機能のオン / オフ"
+          }
+        }
+      }
+    },
+    "privacy": {
+      "clear": {
+        "body": "Trash Browser でこの設定を構成します。",
+        "options": {
+          "lastHour": {
+            "title": "過去 1 時間"
+          },
+          "lastDay": {
+            "title": "過去 24 時間"
+          },
+          "allTime": {
+            "title": "全期間"
+          }
+        }
+      },
+      "cookies": {
+        "body": "Trash Browser でこの設定を構成します。",
+        "options": {
+          "a": {
+            "title": "主なオプション",
+            "description": "ほとんどのユーザーに推奨"
+          },
+          "b": {
+            "title": "追加のコントロール",
+            "description": "この機能を細かく調整"
+          },
+          "c": {
+            "title": "詳細設定",
+            "description": "より詳しい設定"
+          },
+          "toggle": {
+            "title": "この設定を有効にする",
+            "description": "この機能のオン / オフ"
+          }
+        }
+      },
+      "safe-browsing": {
+        "body": "Trash Browser でこの設定を構成します。",
+        "options": {
+          "enhanced": {
+            "title": "強化された保護",
+            "description": "危険なサイトからプロアクティブに保護"
+          },
+          "standard": {
+            "title": "標準保護",
+            "description": "既知の危険なサイトから保護"
+          },
+          "off": {
+            "title": "保護なし（非推奨）",
+            "description": "セーフ ブラウジングの警告は表示されません"
+          }
+        }
+      },
+      "site-settings": {
+        "body": "Trash Browser でこの設定を構成します。",
+        "options": {
+          "a": {
+            "title": "主なオプション",
+            "description": "ほとんどのユーザーに推奨"
+          },
+          "b": {
+            "title": "追加のコントロール",
+            "description": "この機能を細かく調整"
+          },
+          "c": {
+            "title": "詳細設定",
+            "description": "より詳しい設定"
+          },
+          "toggle": {
+            "title": "この設定を有効にする",
+            "description": "この機能のオン / オフ"
+          }
+        }
+      }
+    },
+    "appearance": {
+      "theme": {
+        "body": "ライト、ダーク、またはデバイスに合わせる",
+        "options": {
+          "device": {
+            "title": "デバイス",
+            "description": "システムの外観に合わせる"
+          },
+          "light": {
+            "title": "ライト",
+            "description": "明るい背景と暗い文字"
+          },
+          "dark": {
+            "title": "ダーク",
+            "description": "暗い背景と明るい文字"
+          }
+        }
+      },
+      "toolbar": {
+        "body": "Trash Browser でこの設定を構成します。",
+        "options": {
+          "a": {
+            "title": "主なオプション",
+            "description": "ほとんどのユーザーに推奨"
+          },
+          "b": {
+            "title": "追加のコントロール",
+            "description": "この機能を細かく調整"
+          },
+          "c": {
+            "title": "詳細設定",
+            "description": "より詳しい設定"
+          },
+          "toggle": {
+            "title": "この設定を有効にする",
+            "description": "この機能のオン / オフ"
+          }
+        }
+      },
+      "bookmarks-bar": {
+        "body": "Trash Browser でこの設定を構成します。",
+        "options": {
+          "a": {
+            "title": "主なオプション",
+            "description": "ほとんどのユーザーに推奨"
+          },
+          "b": {
+            "title": "追加のコントロール",
+            "description": "この機能を細かく調整"
+          },
+          "c": {
+            "title": "詳細設定",
+            "description": "より詳しい設定"
+          },
+          "toggle": {
+            "title": "この設定を有効にする",
+            "description": "この機能のオン / オフ"
+          }
+        }
+      },
+      "font-size": {
+        "body": "Trash Browser でこの設定を構成します。",
+        "options": {
+          "small": {
+            "title": "小"
+          },
+          "medium": {
+            "title": "中（推奨）"
+          },
+          "large": {
+            "title": "大"
+          },
+          "xlarge": {
+            "title": "特大"
+          }
+        }
+      },
+      "zoom": {
+        "body": "Trash Browser でこの設定を構成します。",
+        "options": {
+          "a": {
+            "title": "主なオプション",
+            "description": "ほとんどのユーザーに推奨"
+          },
+          "b": {
+            "title": "追加のコントロール",
+            "description": "この機能を細かく調整"
+          },
+          "c": {
+            "title": "詳細設定",
+            "description": "より詳しい設定"
+          },
+          "toggle": {
+            "title": "この設定を有効にする",
+            "description": "この機能のオン / オフ"
+          }
+        }
+      }
+    },
+    "search": {
+      "engine": {
+        "body": "Trash Browser でこの設定を構成します。",
+        "options": {
+          "bing": {
+            "title": "Bing"
+          },
+          "google": {
+            "title": "Google"
+          },
+          "duckduckgo": {
+            "title": "DuckDuckGo"
+          }
+        }
+      },
+      "manage": {
+        "body": "Trash Browser でこの設定を構成します。",
+        "options": {
+          "a": {
+            "title": "主なオプション",
+            "description": "ほとんどのユーザーに推奨"
+          },
+          "b": {
+            "title": "追加のコントロール",
+            "description": "この機能を細かく調整"
+          },
+          "c": {
+            "title": "詳細設定",
+            "description": "より詳しい設定"
+          },
+          "toggle": {
+            "title": "この設定を有効にする",
+            "description": "この機能のオン / オフ"
+          }
+        }
+      }
+    },
+    "default": {
+      "make-default": {
+        "body": "Trash Browser でこの設定を構成します。",
+        "options": {
+          "a": {
+            "title": "主なオプション",
+            "description": "ほとんどのユーザーに推奨"
+          },
+          "b": {
+            "title": "追加のコントロール",
+            "description": "この機能を細かく調整"
+          },
+          "c": {
+            "title": "詳細設定",
+            "description": "より詳しい設定"
+          },
+          "toggle": {
+            "title": "この設定を有効にする",
+            "description": "この機能のオン / オフ"
+          }
+        }
+      }
+    },
+    "startup": {
+      "open": {
+        "body": "Trash Browser でこの設定を構成します。",
+        "options": {
+          "a": {
+            "title": "主なオプション",
+            "description": "ほとんどのユーザーに推奨"
+          },
+          "b": {
+            "title": "追加のコントロール",
+            "description": "この機能を細かく調整"
+          },
+          "c": {
+            "title": "詳細設定",
+            "description": "より詳しい設定"
+          },
+          "toggle": {
+            "title": "この設定を有効にする",
+            "description": "この機能のオン / オフ"
+          }
+        }
+      },
+      "continue": {
+        "body": "Trash Browser でこの設定を構成します。",
+        "options": {
+          "a": {
+            "title": "主なオプション",
+            "description": "ほとんどのユーザーに推奨"
+          },
+          "b": {
+            "title": "追加のコントロール",
+            "description": "この機能を細かく調整"
+          },
+          "c": {
+            "title": "詳細設定",
+            "description": "より詳しい設定"
+          },
+          "toggle": {
+            "title": "この設定を有効にする",
+            "description": "この機能のオン / オフ"
+          }
+        }
+      },
+      "specific": {
+        "body": "Trash Browser でこの設定を構成します。",
+        "options": {
+          "a": {
+            "title": "主なオプション",
+            "description": "ほとんどのユーザーに推奨"
+          },
+          "b": {
+            "title": "追加のコントロール",
+            "description": "この機能を細かく調整"
+          },
+          "c": {
+            "title": "詳細設定",
+            "description": "より詳しい設定"
+          },
+          "toggle": {
+            "title": "この設定を有効にする",
+            "description": "この機能のオン / オフ"
+          }
+        }
+      }
+    },
+    "languages": {
+      "preferred": {
+        "body": "Trash Browser で使用する言語を選択します",
+        "options": {}
+      },
+      "spellcheck": {
+        "body": "Trash Browser でこの設定を構成します。",
+        "options": {
+          "a": {
+            "title": "主なオプション",
+            "description": "ほとんどのユーザーに推奨"
+          },
+          "b": {
+            "title": "追加のコントロール",
+            "description": "この機能を細かく調整"
+          },
+          "c": {
+            "title": "詳細設定",
+            "description": "より詳しい設定"
+          },
+          "toggle": {
+            "title": "この設定を有効にする",
+            "description": "この機能のオン / オフ"
+          }
+        }
+      },
+      "translate": {
+        "body": "Trash Browser でこの設定を構成します。",
+        "options": {
+          "a": {
+            "title": "主なオプション",
+            "description": "ほとんどのユーザーに推奨"
+          },
+          "b": {
+            "title": "追加のコントロール",
+            "description": "この機能を細かく調整"
+          },
+          "c": {
+            "title": "詳細設定",
+            "description": "より詳しい設定"
+          },
+          "toggle": {
+            "title": "この設定を有効にする",
+            "description": "この機能のオン / オフ"
+          }
+        }
+      }
+    },
+    "downloads": {
+      "location": {
+        "body": "Trash Browser でこの設定を構成します。",
+        "options": {
+          "a": {
+            "title": "主なオプション",
+            "description": "ほとんどのユーザーに推奨"
+          },
+          "b": {
+            "title": "追加のコントロール",
+            "description": "この機能を細かく調整"
+          },
+          "c": {
+            "title": "詳細設定",
+            "description": "より詳しい設定"
+          },
+          "toggle": {
+            "title": "この設定を有効にする",
+            "description": "この機能のオン / オフ"
+          }
+        }
+      },
+      "ask": {
+        "body": "Trash Browser でこの設定を構成します。",
+        "options": {
+          "a": {
+            "title": "主なオプション",
+            "description": "ほとんどのユーザーに推奨"
+          },
+          "b": {
+            "title": "追加のコントロール",
+            "description": "この機能を細かく調整"
+          },
+          "c": {
+            "title": "詳細設定",
+            "description": "より詳しい設定"
+          },
+          "toggle": {
+            "title": "この設定を有効にする",
+            "description": "この機能のオン / オフ"
+          }
+        }
+      }
+    },
+    "a11y": {
+      "captions": {
+        "body": "Trash Browser でこの設定を構成します。",
+        "options": {
+          "a": {
+            "title": "主なオプション",
+            "description": "ほとんどのユーザーに推奨"
+          },
+          "b": {
+            "title": "追加のコントロール",
+            "description": "この機能を細かく調整"
+          },
+          "c": {
+            "title": "詳細設定",
+            "description": "より詳しい設定"
+          },
+          "toggle": {
+            "title": "この設定を有効にする",
+            "description": "この機能のオン / オフ"
+          }
+        }
+      },
+      "highlight": {
+        "body": "Trash Browser でこの設定を構成します。",
+        "options": {
+          "a": {
+            "title": "主なオプション",
+            "description": "ほとんどのユーザーに推奨"
+          },
+          "b": {
+            "title": "追加のコントロール",
+            "description": "この機能を細かく調整"
+          },
+          "c": {
+            "title": "詳細設定",
+            "description": "より詳しい設定"
+          },
+          "toggle": {
+            "title": "この設定を有効にする",
+            "description": "この機能のオン / オフ"
+          }
+        }
+      },
+      "tab-hover": {
+        "body": "Trash Browser でこの設定を構成します。",
+        "options": {
+          "a": {
+            "title": "主なオプション",
+            "description": "ほとんどのユーザーに推奨"
+          },
+          "b": {
+            "title": "追加のコントロール",
+            "description": "この機能を細かく調整"
+          },
+          "c": {
+            "title": "詳細設定",
+            "description": "より詳しい設定"
+          },
+          "toggle": {
+            "title": "この設定を有効にする",
+            "description": "この機能のオン / オフ"
+          }
+        }
+      }
+    },
+    "system": {
+      "hw": {
+        "body": "Trash Browser でこの設定を構成します。",
+        "options": {
+          "a": {
+            "title": "主なオプション",
+            "description": "ほとんどのユーザーに推奨"
+          },
+          "b": {
+            "title": "追加のコントロール",
+            "description": "この機能を細かく調整"
+          },
+          "c": {
+            "title": "詳細設定",
+            "description": "より詳しい設定"
+          },
+          "toggle": {
+            "title": "この設定を有効にする",
+            "description": "この機能のオン / オフ"
+          }
+        }
+      },
+      "bg": {
+        "body": "Trash Browser でこの設定を構成します。",
+        "options": {
+          "a": {
+            "title": "主なオプション",
+            "description": "ほとんどのユーザーに推奨"
+          },
+          "b": {
+            "title": "追加のコントロール",
+            "description": "この機能を細かく調整"
+          },
+          "c": {
+            "title": "詳細設定",
+            "description": "より詳しい設定"
+          },
+          "toggle": {
+            "title": "この設定を有効にする",
+            "description": "この機能のオン / オフ"
+          }
+        }
+      },
+      "proxy": {
+        "body": "Trash Browser でこの設定を構成します。",
+        "options": {
+          "a": {
+            "title": "主なオプション",
+            "description": "ほとんどのユーザーに推奨"
+          },
+          "b": {
+            "title": "追加のコントロール",
+            "description": "この機能を細かく調整"
+          },
+          "c": {
+            "title": "詳細設定",
+            "description": "より詳しい設定"
+          },
+          "toggle": {
+            "title": "この設定を有効にする",
+            "description": "この機能のオン / オフ"
+          }
+        }
+      }
+    },
+    "reset": {
+      "restore": {
+        "body": "Trash Browser でこの設定を構成します。",
+        "options": {
+          "a": {
+            "title": "主なオプション",
+            "description": "ほとんどのユーザーに推奨"
+          },
+          "b": {
+            "title": "追加のコントロール",
+            "description": "この機能を細かく調整"
+          },
+          "c": {
+            "title": "詳細設定",
+            "description": "より詳しい設定"
+          },
+          "toggle": {
+            "title": "この設定を有効にする",
+            "description": "この機能のオン / オフ"
+          }
+        }
+      }
+    },
+    "about": {
+      "version": {
+        "body": "Trash Browser でこの設定を構成します。",
+        "options": {
+          "a": {
+            "title": "主なオプション",
+            "description": "ほとんどのユーザーに推奨"
+          },
+          "b": {
+            "title": "追加のコントロール",
+            "description": "この機能を細かく調整"
+          },
+          "c": {
+            "title": "詳細設定",
+            "description": "より詳しい設定"
+          },
+          "toggle": {
+            "title": "この設定を有効にする",
+            "description": "この機能のオン / オフ"
+          }
+        }
+      },
+      "help": {
+        "body": "Trash Browser でこの設定を構成します。",
+        "options": {
+          "a": {
+            "title": "主なオプション",
+            "description": "ほとんどのユーザーに推奨"
+          },
+          "b": {
+            "title": "追加のコントロール",
+            "description": "この機能を細かく調整"
+          },
+          "c": {
+            "title": "詳細設定",
+            "description": "より詳しい設定"
+          },
+          "toggle": {
+            "title": "この設定を有効にする",
+            "description": "この機能のオン / オフ"
+          }
+        }
+      }
+    }
+  },
+  "chrome": {
+    "newTab": "新しいタブ",
+    "downloads": "ダウンロード",
+    "adblock": "広告ブロック",
+    "settings": "設定"
+  },
+  "ntp": {
+    "tagline": "ウェブを検索するかショートカットを開く",
+    "searchPlaceholder": "検索またはウェブサイト名を入力",
+    "addShortcut": "ショートカットを追加",
+    "shortcuts": {
+      "apple": "Apple",
+      "wiki": "Wikipedia",
+      "github": "GitHub",
+      "bing": "Bing",
+      "youtube": "YouTube",
+      "mail": "メール",
+      "maps": "マップ",
+      "news": "ニュース"
+    }
+  },
+  "downloadsMgr": {
+    "title": "ダウンロード",
+    "subtitle": "Trash Browser で保存したファイル",
+    "search": "ダウンロードを検索",
+    "clearCompleted": "完了済みをクリア",
+    "empty": "条件に一致するダウンロードはありません",
+    "filters": {
+      "all": "すべて",
+      "progress": "進行中",
+      "complete": "完了",
+      "paused": "一時停止",
+      "failed": "失敗"
+    },
+    "status": {
+      "complete": "完了",
+      "progress": "ダウンロード中",
+      "paused": "一時停止",
+      "failed": "失敗"
+    },
+    "actions": {
+      "resume": "再開",
+      "remove": "削除"
+    },
+    "time": {
+      "now": "たった今",
+      "today": "今日",
+      "yesterday": "昨日",
+      "week": "今週"
+    }
+  },
+  "adblock": {
+    "title": "広告ブロック",
+    "subtitle": "広告、トラッカー、煩わしい要素をブロック",
+    "stats": {
+      "blocked": "ブロックしたリクエスト",
+      "rules": "有効なルール",
+      "lists": "有効なリスト"
+    },
+    "enable": {
+      "title": "広告ブロックを有効にする",
+      "description": "有効なリストとカスタムルールでネットワーク要求をフィルタ"
+    },
+    "cosmetic": {
+      "title": "コスメティック フィルタ",
+      "description": "ページ上の広告プレースホルダやオーバーレイを非表示"
+    },
+    "listsTitle": "フィルタリスト",
+    "updateLists": "リストを更新",
+    "rulesCount": "{{count}} ルール",
+    "customTitle": "カスタムルール",
+    "customPlaceholder": "||example.com^",
+    "addRule": "追加",
+    "remove": "削除",
+    "lists": {
+      "easylist": {
+        "name": "EasyList",
+        "desc": "主な広告とバナー"
+      },
+      "easyprivacy": {
+        "name": "EasyPrivacy",
+        "desc": "トラッカーと分析"
+      },
+      "fanboy": {
+        "name": "Fanboy Annoyances",
+        "desc": "Cookie 通知とソーシャルウィジェット"
+      },
+      "trash": {
+        "name": "Trash Protect",
+        "desc": "追加の地域 / マルウェアドメイン"
+      },
+      "updated": {
+        "hours": "2 時間前に更新",
+        "today": "今日更新",
+        "days": "3 日前に更新"
+      }
+    }
+  },
+  "overlay": {
+    "common": {
+      "cancel": "キャンセル",
+      "confirm": "確認",
+      "close": "閉じる"
+    },
+    "download": {
+      "title": "ファイルをダウンロード",
+      "askPath": "保存場所を確認する",
+      "save": "保存"
+    },
+    "permission": {
+      "title": "権限のリクエスト",
+      "body": "{{origin}} がこの権限の使用を求めています",
+      "allow": "許可",
+      "once": "今回のみ許可",
+      "block": "ブロック",
+      "types": {
+        "camera": {
+          "title": "カメラの使用"
+        },
+        "microphone": {
+          "title": "マイクの使用"
+        },
+        "location": {
+          "title": "位置情報の取得"
+        },
+        "notifications": {
+          "title": "通知の表示"
+        },
+        "generic": {
+          "title": "権限のリクエスト"
+        }
+      }
+    },
+    "confirm": {
+      "title": "よろしいですか？",
+      "body": "この操作は元に戻せません。"
+    },
+    "auth": {
+      "title": "ログイン",
+      "body": "{{host}} にはユーザー名とパスワードが必要です。",
+      "username": "ユーザー名",
+      "password": "パスワード",
+      "signIn": "ログイン"
+    },
+    "find": {
+      "placeholder": "ページ内検索"
+    }
+  },
+  "about": {
+    "appVersion": "バージョン",
+    "cefVersion": "CEF",
+    "chromiumVersion": "Chromium",
+    "tagline": "このインストールのバージョン情報",
+    "openChromeSettings": "Chrome の設定を開く"
+  }
+}

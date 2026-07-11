@@ -2,12 +2,13 @@
 /target/
 **/*.rs.bk
 *.pdb
-
+*.pyc
 # Local cargo config (machine-specific CEF paths)
 .cargo/config.toml
 .cargo/config.local.toml
 
 # CEF / native artifacts
+/build/
 *.so
 *.so.*
 *.dylib

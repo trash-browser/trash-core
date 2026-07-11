@@ -1,4 +1,4 @@
-//! Trash Browser — GPUI chrome + CEF content (X11 child window).
+//! Trash Browser — GPUI chrome + CEF content in a native child window.
 
 mod cef_host;
 mod content;
@@ -8,11 +8,11 @@ use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 use gpui::{
-    App, Bounds, Context, Entity, MouseButton, SharedString, TitlebarOptions, Window, WindowBounds,
-    WindowOptions, div, prelude::*, px, rgb, size,
+    App, AssetSource, Bounds, Context, Entity, Focusable, MouseButton, SharedString,
+    TitlebarOptions, Window, WindowBounds, WindowControlArea, WindowOptions, div, prelude::*, px,
+    rgb, size, svg,
 };
 use gpui_platform::application;
-use raw_window_handle::{HasWindowHandle as RawHasWindowHandle, RawWindowHandle};
 
 use cef_host::CefEvent;
 use content::content_surface;
@@ -28,6 +28,48 @@ const BORDER: u32 = 0x3a3a3d;
 const TEXT: u32 = 0xe6e6e6;
 const MUTED: u32 = 0x8a8a8f;
 const HOVER: u32 = 0x2f2f33;
+const ICON_ROOT: &str = "assets/tabler_icons";
+
+mod embedded_tabler_assets {
+    include!(concat!(env!("OUT_DIR"), "/tabler_assets.rs"));
+}
+
+struct Assets;
+
+impl AssetSource for Assets {
+    fn load(&self, path: &str) -> anyhow::Result<Option<std::borrow::Cow<'static, [u8]>>> {
+        let path = path.replace('\\', "/");
+        Ok(embedded_tabler_assets::get(&path).map(std::borrow::Cow::Borrowed))
+    }
+
+    fn list(&self, path: &str) -> anyhow::Result<Vec<SharedString>> {
+        let prefix = path.replace('\\', "/");
+        Ok(embedded_tabler_assets::PATHS
+            .iter()
+            .filter(|asset| asset.starts_with(&prefix))
+            .map(|asset| SharedString::from(*asset))
+            .collect())
+    }
+}
+
+fn tabler_icon(style: &str, name: &str, size: f32) -> gpui::Svg {
+    svg()
+        .path(SharedString::from(format!(
+            "{ICON_ROOT}/{style}/{name}.svg"
+        )))
+        .size(px(size))
+        // GPUI's Svg element does not inherit text color from its parent and
+        // skips painting entirely when no color is set on the SVG itself.
+        .text_color(rgb(MUTED))
+}
+
+fn filled_icon(name: &str, size: f32) -> gpui::Svg {
+    tabler_icon("filled", name, size)
+}
+
+fn outline_icon(name: &str, size: f32) -> gpui::Svg {
+    tabler_icon("outline", name, size)
+}
 
 struct Tab {
     id: u64,
@@ -57,16 +99,36 @@ struct Root {
     url_dirty: bool,
     cef_rx: Receiver<CefEvent>,
     start_uri: String,
+    /// Last OS window title pushed to the platform (avoids redundant updates).
+    os_title: String,
 }
 
 impl Root {
-    fn new(omnibox: Entity<Omnibox>, cef_rx: Receiver<CefEvent>, cx: &mut Context<Self>) -> Self {
-        cx.subscribe(&omnibox, |this, _emitter, event: &OmniboxEvent, cx| {
-            match event {
+    fn new(
+        omnibox: Entity<Omnibox>,
+        cef_rx: Receiver<CefEvent>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        cx.subscribe(
+            &omnibox,
+            |this, _emitter, event: &OmniboxEvent, cx| match event {
                 OmniboxEvent::Submit(text) => {
                     this.url_dirty = false;
                     this.navigate(text, cx);
                 }
+            },
+        )
+        .detach();
+
+        // When the omnibox loses focus within the chrome (tab switch, nav button,
+        // Escape), stop guarding it so the address bar tracks the page again.
+        let omnibox_focus = omnibox.read(cx).focus_handle(cx);
+        cx.on_blur(&omnibox_focus, window, |this, _window, cx| {
+            if this.url_dirty {
+                this.url_dirty = false;
+                this.sync_omnibox(cx);
+                cx.notify();
             }
         })
         .detach();
@@ -96,6 +158,23 @@ impl Root {
             url_dirty: false,
             cef_rx,
             start_uri: cef_host::start_uri(),
+            os_title: String::new(),
+        }
+    }
+
+    /// OS window title (taskbar / Alt-Tab): "Trash Browser" on the start page,
+    /// "Trash Browser - <tab>" once the active tab has a real title.
+    fn window_title(&self) -> String {
+        match self.active_tab() {
+            Some(tab) => {
+                let name = tab.title.trim();
+                if tab.url.is_empty() || name.is_empty() || name == "Start" || name == "New Tab" {
+                    "Trash Browser".to_string()
+                } else {
+                    format!("Trash Browser - {name}")
+                }
+            }
+            None => "Trash Browser".to_string(),
         }
     }
 
@@ -109,20 +188,18 @@ impl Root {
 
     fn on_cef_event(&mut self, ev: CefEvent, cx: &mut Context<Self>) {
         match ev {
-            CefEvent::Ready | CefEvent::Created => {
-                let url = self.active_content_url();
-                cef_host::navigate(&url);
-            }
+            // create_browser_locked owns the initial navigation. Loading the same URL
+            // again from either callback aborts CEF's in-flight document load.
+            CefEvent::Ready | CefEvent::Created => {}
             CefEvent::Closed => {}
             CefEvent::Address(url) => {
-                let is_start = url == self.start_uri || url.starts_with("data:text/html");
+                let is_start = url.starts_with("miko://");
                 let shown = if is_start { String::new() } else { url };
                 if let Some(tab) = self.active_tab_mut() {
                     tab.url = shown.clone();
                 }
                 if !self.url_dirty {
-                    self.omnibox
-                        .update(cx, |omni, cx| omni.set_text(shown, cx));
+                    self.omnibox.update(cx, |omni, cx| omni.set_text(shown, cx));
                 }
                 cx.notify();
             }
@@ -146,6 +223,15 @@ impl Root {
                 self.can_forward = can_forward;
                 cx.notify();
             }
+            CefEvent::ContentFocus => {
+                // User is now interacting with the page, not the omnibox; let
+                // address updates flow again and show the current page URL.
+                if self.url_dirty {
+                    self.url_dirty = false;
+                    self.sync_omnibox(cx);
+                    cx.notify();
+                }
+            }
         }
     }
 
@@ -167,10 +253,7 @@ impl Root {
     }
 
     fn sync_omnibox(&self, cx: &mut Context<Self>) {
-        let url = self
-            .active_tab()
-            .map(|t| t.url.clone())
-            .unwrap_or_default();
+        let url = self.active_tab().map(|t| t.url.clone()).unwrap_or_default();
         self.omnibox.update(cx, |omni, cx| omni.set_text(url, cx));
     }
 
@@ -192,6 +275,8 @@ impl Root {
         self.url_dirty = false;
         self.sync_omnibox(cx);
         cef_host::navigate(&load);
+        // Return keyboard focus to the page so the loaded content is typeable.
+        cef_host::focus_content();
         cx.notify();
     }
 
@@ -257,9 +342,16 @@ impl Root {
 }
 
 impl Render for Root {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let can_back = self.can_back;
         let can_forward = self.can_forward;
+
+        // Keep the OS window title (taskbar / Alt-Tab) in sync with the tab.
+        let title = self.window_title();
+        if title != self.os_title {
+            self.os_title = title.clone();
+            window.set_window_title(&title);
+        }
 
         div()
             .flex()
@@ -268,14 +360,14 @@ impl Render for Root {
             .bg(rgb(BG))
             .text_color(rgb(TEXT))
             .text_sm()
-            .child(self.titlebar(cx))
+            .child(self.titlebar(window.is_maximized(), cx))
             .child(self.toolbar(can_back, can_forward, cx))
             .child(content_surface())
     }
 }
 
 impl Root {
-    fn titlebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn titlebar(&self, is_maximized: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let active = self.active;
         let mut tabs = div().flex().items_end().gap_1().pl_2();
         for tab in &self.tabs {
@@ -305,10 +397,18 @@ impl Root {
                             .rounded_sm()
                             .text_color(rgb(MUTED))
                             .hover(|s| s.bg(rgb(0x50505a)).text_color(rgb(TEXT)))
-                            .child("✕")
+                            .child(filled_icon("x", 12.0))
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                             .on_click(cx.listener(move |this, _, _w, cx| this.close_tab(id, cx))),
                     )
-                    .on_click(cx.listener(move |this, _, _w, cx| this.select_tab(id, cx))),
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _, window, cx| {
+                            this.select_tab(id, cx);
+                            cx.stop_propagation();
+                            window.start_window_move();
+                        }),
+                    ),
             );
         }
 
@@ -330,16 +430,23 @@ impl Root {
                     .rounded_md()
                     .text_color(rgb(MUTED))
                     .hover(|s| s.bg(rgb(HOVER)).text_color(rgb(TEXT)))
-                    .child("+")
+                    .child(filled_icon("plus", 16.0))
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_click(cx.listener(|this, _, _w, cx| this.new_tab(cx))),
             )
             .child(
+                // Empty strip between the tabs and the window controls: the main
+                // drag handle. On Windows dragging goes through the native
+                // WM_NCHITTEST/HTCAPTION path (window_control_area); on other
+                // platforms start_window_move drives it.
                 div()
                     .flex_1()
                     .h_full()
+                    .window_control_area(WindowControlArea::Drag)
                     .on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move()),
             )
-            .child(window_controls())
+            .child(window_controls(is_maximized))
+            .on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move())
     }
 
     fn toolbar(
@@ -356,17 +463,17 @@ impl Root {
             .px_3()
             .bg(rgb(BAR))
             .child(
-                nav_btn("back", "‹", can_back).when(can_back, |el| {
+                nav_btn("back", "arrow-left", can_back).when(can_back, |el| {
                     el.on_click(cx.listener(|this, _, _w, cx| this.go_back(cx)))
                 }),
             )
             .child(
-                nav_btn("fwd", "›", can_forward).when(can_forward, |el| {
+                nav_btn("fwd", "arrow-right", can_forward).when(can_forward, |el| {
                     el.on_click(cx.listener(|this, _, _w, cx| this.go_forward(cx)))
                 }),
             )
             .child(
-                nav_btn("reload", if self.loading { "✕" } else { "⟳" }, true)
+                nav_btn("reload", if self.loading { "x" } else { "refresh" }, true)
                     .on_click(cx.listener(|this, _, _w, cx| this.reload(cx))),
             )
             .child(
@@ -382,23 +489,29 @@ impl Root {
                     .bg(rgb(FIELD))
                     .border_1()
                     .border_color(rgb(BORDER))
-                    .child(div().text_color(rgb(MUTED)).child("🔒"))
+                    .child(
+                        div()
+                            .text_color(rgb(MUTED))
+                            .child(filled_icon("lock", 14.0)),
+                    )
                     .child(self.omnibox.clone())
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(|this, _, _w, _cx| {
+                        cx.listener(|this, _, window, cx| {
                             this.url_dirty = true;
+                            // Focus the field in GPUI and steal OS keyboard focus
+                            // from the CEF child so typed keys reach the omnibox.
+                            let handle = this.omnibox.read(cx).focus_handle(cx);
+                            window.focus(&handle, cx);
+                            cef_host::focus_chrome();
                         }),
                     ),
             )
-            .child(
-                nav_btn("share", "⤴", true)
-                    .on_click(cx.listener(|this, _, _w, cx| this.reload(cx))),
-            )
+            .child(nav_btn("more", "dots", true))
     }
 }
 
-fn nav_btn(id: &'static str, glyph: &'static str, enabled: bool) -> gpui::Stateful<gpui::Div> {
+fn nav_btn(id: &'static str, icon: &'static str, enabled: bool) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
         .w(px(30.0))
@@ -409,11 +522,13 @@ fn nav_btn(id: &'static str, glyph: &'static str, enabled: bool) -> gpui::Statef
         .rounded_lg()
         .text_color(rgb(MUTED))
         .opacity(if enabled { 1.0 } else { 0.35 })
-        .when(enabled, |el| el.hover(|s| s.bg(rgb(HOVER)).text_color(rgb(TEXT))))
-        .child(glyph)
+        .when(enabled, |el| {
+            el.hover(|s| s.bg(rgb(HOVER)).text_color(rgb(TEXT)))
+        })
+        .child(outline_icon(icon, 18.0))
 }
 
-fn window_controls() -> impl IntoElement {
+fn window_controls(is_maximized: bool) -> impl IntoElement {
     div()
         .flex()
         .items_center()
@@ -426,10 +541,20 @@ fn window_controls() -> impl IntoElement {
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded_md()
+                .font_family(if cfg!(target_os = "windows") {
+                    "Segoe Fluent Icons"
+                } else {
+                    "sans-serif"
+                })
+                .text_size(px(10.0))
                 .text_color(rgb(MUTED))
                 .hover(|s| s.bg(rgb(HOVER)).text_color(rgb(TEXT)))
-                .child("—")
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(if cfg!(target_os = "windows") {
+                    "\u{e921}"
+                } else {
+                    "—"
+                })
                 .on_click(|_, window, _| window.minimize_window()),
         )
         .child(
@@ -440,10 +565,22 @@ fn window_controls() -> impl IntoElement {
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded_md()
+                .font_family(if cfg!(target_os = "windows") {
+                    "Segoe Fluent Icons"
+                } else {
+                    "sans-serif"
+                })
+                .text_size(px(10.0))
                 .text_color(rgb(MUTED))
                 .hover(|s| s.bg(rgb(HOVER)).text_color(rgb(TEXT)))
-                .child("▢")
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(if cfg!(target_os = "windows") {
+                    if is_maximized { "\u{e923}" } else { "\u{e922}" }
+                } else if is_maximized {
+                    "❐"
+                } else {
+                    "▢"
+                })
                 .on_click(|_, window, _| window.zoom_window()),
         )
         .child(
@@ -454,10 +591,20 @@ fn window_controls() -> impl IntoElement {
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded_md()
+                .font_family(if cfg!(target_os = "windows") {
+                    "Segoe Fluent Icons"
+                } else {
+                    "sans-serif"
+                })
+                .text_size(px(10.0))
                 .text_color(rgb(MUTED))
                 .hover(|s| s.bg(rgb(0xe81123)).text_color(rgb(0xffffff)))
-                .child("✕")
+                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                .child(if cfg!(target_os = "windows") {
+                    "\u{e8bb}"
+                } else {
+                    "✕"
+                })
                 .on_click(|_, _window, cx| {
                     cef_host::close_browser();
                     cx.quit();
@@ -482,10 +629,14 @@ fn normalize(input: &str) -> String {
     if s.is_empty() {
         return String::new();
     }
+    if let Some(route) = s.strip_prefix("miko://#") {
+        return format!("miko://shell/#{route}");
+    }
     let has_scheme = [
         "http://",
         "https://",
         "file://",
+        "miko://",
         "about:",
         "data:",
         "chrome://",
@@ -496,10 +647,8 @@ fn normalize(input: &str) -> String {
     if has_scheme {
         return s.to_string();
     }
-    let looks_like_domain = !s.contains(' ')
-        && s.contains('.')
-        && !s.starts_with('.')
-        && !s.ends_with('.');
+    let looks_like_domain =
+        !s.contains(' ') && s.contains('.') && !s.starts_with('.') && !s.ends_with('.');
     if looks_like_domain {
         format!("https://{s}")
     } else {
@@ -522,7 +671,15 @@ fn urlencode(s: &str) -> String {
 }
 
 fn main() {
+    // GPUI's Windows DirectComposition root visual covers native child HWNDs.
+    // This browser embeds CEF as a child, so use GPUI's HWND swap-chain path.
+    #[cfg(target_os = "windows")]
+    unsafe {
+        std::env::set_var("GPUI_DISABLE_DIRECT_COMPOSITION", "1");
+    }
+
     // CEF child windows need an X11 parent. Prefer X11/Xwayland over Wayland.
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     unsafe {
         std::env::remove_var("WAYLAND_DISPLAY");
     }
@@ -534,7 +691,7 @@ fn main() {
         return;
     };
 
-    application().run(|cx: &mut App| {
+    application().with_assets(Assets).run(|cx: &mut App| {
         omnibox::bind_keys(cx);
 
         cx.on_app_quit(|_cx| async {
@@ -547,34 +704,15 @@ fn main() {
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 titlebar: Some(TitlebarOptions {
+                    title: Some("Trash Browser".into()),
                     appears_transparent: true,
                     ..Default::default()
                 }),
                 ..Default::default()
             },
             |window, cx| {
-                // Seed parent XID early if available.
-                if let Ok(handle) = RawHasWindowHandle::window_handle(window) {
-                    let xid = match handle.as_raw() {
-                        RawWindowHandle::Xlib(h) => Some(h.window as u64),
-                        RawWindowHandle::Xcb(h) => Some(h.window.get() as u64),
-                        _ => None,
-                    };
-                    if let Some(xid) = xid {
-                        cef_host::set_parent_bounds(
-                            xid,
-                            cef::Rect {
-                                x: 0,
-                                y: 92,
-                                width: 1280,
-                                height: 728,
-                            },
-                        );
-                    }
-                }
-
                 let omnibox = cx.new(Omnibox::new);
-                cx.new(|cx| Root::new(omnibox, cef_rx, cx))
+                cx.new(|cx| Root::new(omnibox, cef_rx, window, cx))
             },
         )
         .unwrap();

@@ -55,8 +55,8 @@ impl Element for ContentSurface {
         window: &mut Window,
         _cx: &mut App,
     ) -> Self::PrepaintState {
-        if let Some((xid, rect)) = parent_and_rect(window, bounds) {
-            cef_host::set_parent_bounds(xid, rect);
+        if let Some((parent, rect)) = parent_and_rect(window, bounds) {
+            cef_host::set_parent_bounds(parent, rect);
         }
     }
 
@@ -77,15 +77,16 @@ impl Element for ContentSurface {
 
 fn parent_and_rect(window: &Window, bounds: Bounds<Pixels>) -> Option<(u64, cef::Rect)> {
     let handle = HasWindowHandle::window_handle(window).ok()?;
-    let xid = match handle.as_raw() {
+    let parent = match handle.as_raw() {
         RawWindowHandle::Xlib(h) => h.window as u64,
         RawWindowHandle::Xcb(h) => h.window.get() as u64,
+        RawWindowHandle::Win32(h) => h.hwnd.get() as u64,
         _ => return None,
     };
 
     let device = bounds.to_device_pixels(window.scale_factor());
     Some((
-        xid,
+        parent,
         cef::Rect {
             x: i32::from(device.origin.x),
             y: i32::from(device.origin.y),
