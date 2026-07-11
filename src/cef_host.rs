@@ -2040,7 +2040,34 @@ wrap_life_span_handler! {
         }
 
         fn do_close(&self, _browser: Option<&mut Browser>) -> i32 {
-            0 // allow
+            // Windows: every tab is a windowed CEF child parented (set_as_child)
+            // under the single shared GPUI window. Returning 0 (default close)
+            // makes CEF post WM_CLOSE to the browser's top-level owner — which is
+            // that shared root window — so closing any one tab would tear down the
+            // whole app. Since the browser is parented to our own (non-Views)
+            // window, destroy just this browser's child HWND ourselves and return
+            // 1 so CEF leaves the root window alone. WM_NCDESTROY still drives CEF
+            // through to on_before_close, keeping the tab bookkeeping correct.
+            #[cfg(target_os = "windows")]
+            {
+                unsafe extern "system" {
+                    fn DestroyWindow(hwnd: isize) -> i32;
+                }
+                if let Some(browser) = _browser.as_deref()
+                    && let Some(host) = browser.host()
+                {
+                    let hwnd = host.window_handle();
+                    if !hwnd.0.is_null() {
+                        unsafe { DestroyWindow(hwnd.0 as isize) };
+                    }
+                }
+                1 // application handled destruction
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                let _ = _browser;
+                0 // OSR / windowless: no owner window to notify — default close
+            }
         }
 
         fn on_before_close(&self, _browser: Option<&mut Browser>) {
