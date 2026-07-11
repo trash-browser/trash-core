@@ -2596,10 +2596,10 @@ fn match_cef_chrome_shortcut(event: &KeyEvent) -> Option<crate::shortcuts::Short
     // Prefer RAWKEYDOWN so we don't also fire on KEYDOWN/CHAR (Windows).
     let is_keydown = event.type_.get_raw() == KeyEventType::RAWKEYDOWN.get_raw();
     let mods = event.modifiers;
-    let control = mods & sys::cef_event_flags_t::EVENTFLAG_CONTROL_DOWN.0 != 0;
-    let shift = mods & sys::cef_event_flags_t::EVENTFLAG_SHIFT_DOWN.0 != 0;
-    let alt = mods & sys::cef_event_flags_t::EVENTFLAG_ALT_DOWN.0 != 0;
-    let command = mods & sys::cef_event_flags_t::EVENTFLAG_COMMAND_DOWN.0 != 0;
+    let control = mods & sys::cef_event_flags_t::EVENTFLAG_CONTROL_DOWN.0 as u32 != 0;
+    let shift = mods & sys::cef_event_flags_t::EVENTFLAG_SHIFT_DOWN.0 as u32 != 0;
+    let alt = mods & sys::cef_event_flags_t::EVENTFLAG_ALT_DOWN.0 as u32 != 0;
+    let command = mods & sys::cef_event_flags_t::EVENTFLAG_COMMAND_DOWN.0 as u32 != 0;
     crate::shortcuts::match_cef_key(
         is_keydown,
         event.windows_key_code,
