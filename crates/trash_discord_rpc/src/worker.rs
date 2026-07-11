@@ -10,6 +10,16 @@ use crate::resolve_client_id;
 
 const MIN_UPDATE_INTERVAL: Duration = Duration::from_secs(2);
 const RECONNECT_INTERVAL: Duration = Duration::from_secs(8);
+/// Steady re-push so we stay above other apps (e.g. Zed) on Discord's status line.
+const REFRESH_INTERVAL: Duration = Duration::from_secs(5);
+/// After connect / first publish, hammer SET_ACTIVITY for a few seconds.
+const CLAIM_BURST_OFFSETS: &[Duration] = &[
+    Duration::from_millis(200),
+    Duration::from_secs(1),
+    Duration::from_secs(2),
+    Duration::from_secs(4),
+    Duration::from_secs(7),
+];
 
 /// Configuration for [`DiscordRpc::start`].
 #[derive(Debug, Clone)]
@@ -129,19 +139,25 @@ fn worker_loop(client_id: String, config: DiscordRpcConfig, rx: Receiver<Cmd>) {
         .unwrap_or_else(Instant::now);
     let mut next_reconnect = Instant::now();
     let mut warned_connect = false;
+    let mut claim_at: Vec<Instant> = Vec::new();
+    let mut force_claim = false;
 
     loop {
+        let now = Instant::now();
         let connected = client.is_some();
+        let next_claim = claim_at.iter().copied().find(|t| *t > now);
         let wait = if pending.is_some() && connected {
-            let elapsed = last_push.elapsed();
-            if elapsed >= MIN_UPDATE_INTERVAL {
-                Duration::from_millis(0)
-            } else {
-                MIN_UPDATE_INTERVAL - elapsed
-            }
+            Duration::from_millis(0)
         } else if !connected {
             next_reconnect
-                .saturating_duration_since(Instant::now())
+                .saturating_duration_since(now)
+                .max(Duration::from_millis(50))
+        } else if let Some(at) = next_claim {
+            at.saturating_duration_since(now)
+                .max(Duration::from_millis(20))
+        } else if last_sent.is_some() {
+            REFRESH_INTERVAL
+                .saturating_sub(last_push.elapsed())
                 .max(Duration::from_millis(50))
         } else {
             Duration::from_secs(30)
@@ -150,10 +166,14 @@ fn worker_loop(client_id: String, config: DiscordRpcConfig, rx: Receiver<Cmd>) {
         match rx.recv_timeout(wait) {
             Ok(Cmd::Update(status)) => {
                 pending = Some(status);
+                force_claim = true;
+                arm_claim_burst(&mut claim_at);
             }
             Ok(Cmd::Clear) => {
                 pending = None;
                 last_sent = None;
+                claim_at.clear();
+                force_claim = false;
                 if let Some(ipc) = client.as_mut() {
                     let _ = ipc.clear_activity();
                 }
@@ -184,8 +204,16 @@ fn worker_loop(client_id: String, config: DiscordRpcConfig, rx: Receiver<Cmd>) {
                     client = Some(ipc);
                     warned_connect = false;
                     eprintln!("[discord-rpc] connected");
-                    if last_sent.is_some() && pending.is_none() {
-                        pending = last_sent.clone();
+                    force_claim = true;
+                    arm_claim_burst(&mut claim_at);
+                    if pending.is_none() {
+                        pending = last_sent.clone().or_else(|| {
+                            Some(PresenceStatus {
+                                title: "New Tab".into(),
+                                url: String::new(),
+                                tab_count: 1,
+                            })
+                        });
                     }
                     last_push = Instant::now()
                         .checked_sub(MIN_UPDATE_INTERVAL)
@@ -205,13 +233,31 @@ fn worker_loop(client_id: String, config: DiscordRpcConfig, rx: Receiver<Cmd>) {
             }
         }
 
+        let now = Instant::now();
+        let before = claim_at.len();
+        claim_at.retain(|t| *t > now);
+        let due_now = claim_at.len() < before;
+
+        if pending.is_none()
+            && client.is_some()
+            && let Some(status) = last_sent.clone()
+            && (due_now || last_push.elapsed() >= REFRESH_INTERVAL)
+        {
+            pending = Some(status);
+            if due_now {
+                force_claim = true;
+            }
+        }
+
         let Some(status) = pending.take() else {
             continue;
         };
-        if last_sent.as_ref() == Some(&status) {
+        let same_as_last = last_sent.as_ref() == Some(&status);
+        let claiming = force_claim || due_now;
+        if same_as_last && !claiming && last_push.elapsed() < REFRESH_INTERVAL {
             continue;
         }
-        if last_push.elapsed() < MIN_UPDATE_INTERVAL {
+        if !same_as_last && !claiming && last_push.elapsed() < MIN_UPDATE_INTERVAL {
             pending = Some(status);
             continue;
         }
@@ -221,15 +267,20 @@ fn worker_loop(client_id: String, config: DiscordRpcConfig, rx: Receiver<Cmd>) {
             continue;
         };
 
-        match push_activity(ipc, &config, &status, session_start) {
+        match push_activity(ipc, &config, &status, session_start, claiming) {
             Ok(()) => {
-                let formatted = format_presence(&status);
-                eprintln!(
-                    "[discord-rpc] activity details={:?} state={:?}",
-                    formatted.details, formatted.state
-                );
+                if !same_as_last || claiming {
+                    let formatted = format_presence(&status);
+                    eprintln!(
+                        "[discord-rpc] activity details={:?} state={:?}{}",
+                        formatted.details,
+                        formatted.state,
+                        if claiming { " (claim)" } else { "" }
+                    );
+                }
                 last_sent = Some(status);
                 last_push = Instant::now();
+                force_claim = false;
             }
             Err(error) => {
                 eprintln!("[discord-rpc] set_activity failed ({error}); reconnecting");
@@ -237,10 +288,18 @@ fn worker_loop(client_id: String, config: DiscordRpcConfig, rx: Receiver<Cmd>) {
                     old.close();
                 }
                 pending = Some(status);
+                claim_at.clear();
+                force_claim = true;
                 next_reconnect = Instant::now() + RECONNECT_INTERVAL;
             }
         }
     }
+}
+
+fn arm_claim_burst(claim_at: &mut Vec<Instant>) {
+    let start = Instant::now();
+    claim_at.clear();
+    claim_at.extend(CLAIM_BURST_OFFSETS.iter().map(|d| start + *d));
 }
 
 fn push_activity(
@@ -248,8 +307,14 @@ fn push_activity(
     config: &DiscordRpcConfig,
     status: &PresenceStatus,
     session_start: i64,
+    claim: bool,
 ) -> Result<(), crate::ipc::IpcError> {
     let formatted = format_presence(status);
+    // Clear-then-set helps Discord promote us over a long-running peer activity.
+    if claim {
+        let _ = client.clear_activity();
+        thread::sleep(Duration::from_millis(40));
+    }
     let image = config.large_image.trim();
     if !image.is_empty() {
         if client
