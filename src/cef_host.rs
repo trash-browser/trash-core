@@ -55,13 +55,16 @@ pub enum CefEvent {
         overlay: String,
         payload: serde_json::Value,
     },
-    /// Page right-click menu intercepted for a dismissible GPUI popup (Linux OSR).
+    /// Page right-click menu intercepted for a dismissible GPUI popup.
     PageContextMenu {
-        /// View coordinates in device pixels (CEF OSR space).
+        /// View coordinates in device pixels (CEF content space).
         x: i32,
         y: i32,
         entries: Vec<crate::context_menu::ContextMenuEntry>,
     },
+    /// Chrome shortcut intercepted while the native CEF child has OS focus
+    /// (Windows). Linux OSR already catches these in the GPUI key path.
+    ChromeShortcut(crate::shortcuts::Shortcut),
 }
 
 /// A tab whose CEF browser has not been created yet.
@@ -1740,6 +1743,9 @@ wrap_client! {
         fn context_menu_handler(&self) -> Option<ContextMenuHandler> {
             Some(ContentContextMenu::new())
         }
+        fn keyboard_handler(&self) -> Option<KeyboardHandler> {
+            Some(ContentKeyboardHandler::new())
+        }
         fn render_handler(&self) -> Option<RenderHandler> {
             linux_render_handler()
         }
@@ -2581,6 +2587,52 @@ fn map_cef_resource_type(resource_type: cef::ResourceType) -> AdBlockResourceTyp
 
 static PENDING_CONTEXT_MENU: Mutex<Option<RunContextMenuCallback>> = Mutex::new(None);
 
+#[cfg(target_os = "windows")]
+type NativeOsKeyEvent = sys::MSG;
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+type NativeOsKeyEvent = sys::XEvent;
+
+fn match_cef_chrome_shortcut(event: &KeyEvent) -> Option<crate::shortcuts::Shortcut> {
+    // Prefer RAWKEYDOWN so we don't also fire on KEYDOWN/CHAR (Windows).
+    let is_keydown = event.type_.get_raw() == KeyEventType::RAWKEYDOWN.get_raw();
+    let mods = event.modifiers;
+    let control = mods & sys::cef_event_flags_t::EVENTFLAG_CONTROL_DOWN.0 != 0;
+    let shift = mods & sys::cef_event_flags_t::EVENTFLAG_SHIFT_DOWN.0 != 0;
+    let alt = mods & sys::cef_event_flags_t::EVENTFLAG_ALT_DOWN.0 != 0;
+    let command = mods & sys::cef_event_flags_t::EVENTFLAG_COMMAND_DOWN.0 != 0;
+    crate::shortcuts::match_cef_key(
+        is_keydown,
+        event.windows_key_code,
+        control,
+        shift,
+        alt,
+        command,
+    )
+}
+
+wrap_keyboard_handler! {
+    struct ContentKeyboardHandler;
+
+    impl KeyboardHandler {
+        fn on_pre_key_event(
+            &self,
+            _browser: Option<&mut Browser>,
+            event: Option<&KeyEvent>,
+            _os_event: Option<&mut NativeOsKeyEvent>,
+            _is_keyboard_shortcut: Option<&mut i32>,
+        ) -> i32 {
+            let Some(event) = event else {
+                return 0;
+            };
+            let Some(shortcut) = match_cef_chrome_shortcut(event) else {
+                return 0;
+            };
+            emit(CefEvent::ChromeShortcut(shortcut));
+            1
+        }
+    }
+}
+
 /// Device-pixel origin of the CEF content view within the GPUI window.
 pub fn content_device_origin() -> (i32, i32) {
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
@@ -2785,46 +2837,39 @@ wrap_context_menu_handler! {
             model: Option<&mut MenuModel>,
             callback: Option<&mut RunContextMenuCallback>,
         ) -> i32 {
-            // Linux OSR: CEF's native menu cannot dismiss (OS focus stays on
-            // chrome). Handle it ourselves with a GPUI popup.
-            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-            {
-                let Some(model) = model.as_deref() else {
-                    if let Some(callback) = callback {
-                        callback.cancel();
-                    }
-                    return 1;
-                };
-                let entries = take_context_menu_entries(model);
-                let (x, y) = params
-                    .as_deref()
-                    .map(|p| (p.xcoord(), p.ycoord()))
-                    .unwrap_or((0, 0));
-                if entries.is_empty() {
-                    if let Some(callback) = callback {
-                        callback.cancel();
-                    }
-                    return 1;
-                }
-                if let Ok(mut slot) = PENDING_CONTEXT_MENU.lock() {
-                    if let Some(previous) = slot.take() {
-                        previous.cancel();
-                    }
-                    if let Some(callback) = callback {
-                        *slot = Some(callback.clone());
-                    }
-                } else if let Some(callback) = callback {
+            // Take over CEF's menu with a GPUI popup. On Linux OSR the native
+            // menu cannot dismiss (OS focus stays on chrome); on Windows the
+            // Alloy/native HWND menu is unreliable in this embedding.
+            let Some(model) = model.as_deref() else {
+                if let Some(callback) = callback {
                     callback.cancel();
-                    return 1;
                 }
-                emit(CefEvent::PageContextMenu { x, y, entries });
+                return 1;
+            };
+            let entries = take_context_menu_entries(model);
+            let (x, y) = params
+                .as_deref()
+                .map(|p| (p.xcoord(), p.ycoord()))
+                .unwrap_or((0, 0));
+            if entries.is_empty() {
+                if let Some(callback) = callback {
+                    callback.cancel();
+                }
                 return 1;
             }
-            #[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
-            {
-                let _ = (params, model, callback);
-                0
+            if let Ok(mut slot) = PENDING_CONTEXT_MENU.lock() {
+                if let Some(previous) = slot.take() {
+                    previous.cancel();
+                }
+                if let Some(callback) = callback {
+                    *slot = Some(callback.clone());
+                }
+            } else if let Some(callback) = callback {
+                callback.cancel();
+                return 1;
             }
+            emit(CefEvent::PageContextMenu { x, y, entries });
+            1
         }
 
         fn on_context_menu_dismissed(

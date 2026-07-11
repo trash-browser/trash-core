@@ -126,6 +126,8 @@ struct Root {
     context_menu_window: Option<WindowHandle<context_menu::ContextMenuView>>,
     /// Open on next render (needs a `Window` handle for placement).
     pending_context_menu: Option<(i32, i32, Vec<context_menu::ContextMenuEntry>)>,
+    /// Chrome shortcut from CEF keyboard handler (needs Window for some actions).
+    pending_shortcut: Option<shortcuts::Shortcut>,
     /// Current page zoom as a percentage (100 = default).
     zoom_percent: i32,
     /// Transient Chrome-style zoom bubble.
@@ -208,6 +210,7 @@ impl Root {
             context_menu_result: Default::default(),
             context_menu_window: None,
             pending_context_menu: None,
+            pending_shortcut: None,
             zoom_percent: 100,
             zoom_hud_visible: false,
             zoom_hud_generation: 0,
@@ -257,11 +260,15 @@ impl Root {
         }
         let mut events = Vec::new();
         cef_host::pump(&self.cef_rx, &mut events);
-        if events.is_empty() {
-            return;
-        }
         for ev in events {
             self.on_cef_event(ev, cx);
+        }
+        // Windows: Chromium may change zoom via Ctrl+wheel while the child has
+        // OS focus; sync the HUD whenever the live level drifts.
+        let zoom = cef_host::zoom_percent();
+        if zoom != self.zoom_percent {
+            self.zoom_percent = zoom;
+            self.show_zoom_hud(cx);
         }
     }
 
@@ -350,6 +357,10 @@ impl Root {
             }
             CefEvent::PageContextMenu { x, y, entries } => {
                 self.pending_context_menu = Some((x, y, entries));
+                cx.notify();
+            }
+            CefEvent::ChromeShortcut(shortcut) => {
+                self.pending_shortcut = Some(shortcut);
                 cx.notify();
             }
         }
@@ -858,6 +869,13 @@ impl Render for Root {
             cx.defer_in(window, |this, window, cx| {
                 if let Some((x, y, entries)) = this.pending_context_menu.take() {
                     this.open_page_context_menu(x, y, entries, window, cx);
+                }
+            });
+        }
+        if self.pending_shortcut.is_some() {
+            cx.defer_in(window, |this, window, cx| {
+                if let Some(shortcut) = this.pending_shortcut.take() {
+                    this.run_shortcut(shortcut, window, cx);
                 }
             });
         }
