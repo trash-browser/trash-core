@@ -14,7 +14,7 @@ version = "0.24.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3b7f7f85a7e5f68090000ed7622545829afd484d210358702ae4cb97dd0c320"
 dependencies = [
- "uuid 1.23.4",
+ "uuid",
 ]
 
 [[package]]
@@ -1763,21 +1763,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "discord-rich-presence"
-version = "1.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "90c55d69cab17c19677ce3a5f8face993a9e6eaf847fecac3547f3a3ff4a2494"
-dependencies = [
- "log",
- "serde",
- "serde_derive",
- "serde_json",
- "serde_repr",
- "thiserror 2.0.18",
- "uuid 0.8.2",
-]
-
-[[package]]
 name = "dispatch"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2672,7 +2657,7 @@ dependencies = [
  "url",
  "usvg",
  "util_macros-gpui-standalone",
- "uuid 1.23.4",
+ "uuid",
  "waker-fn",
  "web-time",
  "windows 0.62.2",
@@ -2714,7 +2699,7 @@ dependencies = [
  "swash",
  "url",
  "util-gpui-standalone",
- "uuid 1.23.4",
+ "uuid",
  "x11-clipboard",
  "x11rb",
  "xkbcommon",
@@ -2762,7 +2747,7 @@ dependencies = [
  "smallvec",
  "strum",
  "util-gpui-standalone",
- "uuid 1.23.4",
+ "uuid",
  "zed-font-kit",
 ]
 
@@ -2830,7 +2815,7 @@ dependencies = [
  "parking_lot",
  "raw-window-handle",
  "smallvec",
- "uuid 1.23.4",
+ "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm_thread",
@@ -2886,7 +2871,7 @@ dependencies = [
  "raw-window-handle",
  "smallvec",
  "util-gpui-standalone",
- "uuid 1.23.4",
+ "uuid",
  "windows 0.62.2",
  "windows-core 0.62.2",
  "windows-numerics 0.3.1",
@@ -6474,7 +6459,7 @@ dependencies = [
 name = "trash_discord_rpc"
 version = "0.1.0"
 dependencies = [
- "discord-rich-presence",
+ "serde_json",
  "url",
 ]
 
@@ -6760,15 +6745,6 @@ dependencies = [
  "perf-gpui-standalone",
  "quote",
  "syn",
-]
-
-[[package]]
-name = "uuid"
-version = "0.8.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bc5cf98d8186244414c848017f0e2676b3fcb46807f6668a97dfe67359a3c4b7"
-dependencies = [
- "getrandom 0.2.17",
 ]
 
 [[package]]
@@ -7848,7 +7824,7 @@ dependencies = [
  "serde_repr",
  "tracing",
  "uds_windows",
- "uuid 1.23.4",
+ "uuid",
  "windows-sys 0.61.2",
  "winnow 1.0.3",
  "zbus_macros",

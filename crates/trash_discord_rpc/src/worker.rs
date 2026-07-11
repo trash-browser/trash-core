@@ -4,9 +4,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use discord_rich_presence::activity::{Activity, ActivityType, Assets, Timestamps};
-use discord_rich_presence::{DiscordIpc, DiscordIpcClient};
-
+use crate::ipc::DiscordIpc;
 use crate::presence::{PresenceStatus, format_presence};
 use crate::resolve_client_id;
 
@@ -123,8 +121,7 @@ impl Drop for DiscordRpc {
 
 fn worker_loop(client_id: String, config: DiscordRpcConfig, rx: Receiver<Cmd>) {
     let session_start = unix_now_secs();
-    let mut client = DiscordIpcClient::new(&client_id);
-    let mut connected = false;
+    let mut client: Option<DiscordIpc> = None;
     let mut pending: Option<PresenceStatus> = None;
     let mut last_sent: Option<PresenceStatus> = None;
     let mut last_push = Instant::now()
@@ -134,6 +131,7 @@ fn worker_loop(client_id: String, config: DiscordRpcConfig, rx: Receiver<Cmd>) {
     let mut warned_connect = false;
 
     loop {
+        let connected = client.is_some();
         let wait = if pending.is_some() && connected {
             let elapsed = last_push.elapsed();
             if elapsed >= MIN_UPDATE_INTERVAL {
@@ -156,37 +154,36 @@ fn worker_loop(client_id: String, config: DiscordRpcConfig, rx: Receiver<Cmd>) {
             Ok(Cmd::Clear) => {
                 pending = None;
                 last_sent = None;
-                if connected {
-                    let _ = client.clear_activity();
+                if let Some(ipc) = client.as_mut() {
+                    let _ = ipc.clear_activity();
                 }
             }
             Ok(Cmd::Shutdown) => {
-                if connected {
-                    let _ = client.clear_activity();
-                    let _ = client.close();
+                if let Some(mut ipc) = client.take() {
+                    let _ = ipc.clear_activity();
+                    ipc.close();
                 }
                 return;
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => {
-                if connected {
-                    let _ = client.clear_activity();
-                    let _ = client.close();
+                if let Some(mut ipc) = client.take() {
+                    let _ = ipc.clear_activity();
+                    ipc.close();
                 }
                 return;
             }
         }
 
-        if !connected {
+        if client.is_none() {
             if Instant::now() < next_reconnect {
                 continue;
             }
-            match client.connect() {
-                Ok(()) => {
-                    connected = true;
+            match DiscordIpc::connect(&client_id) {
+                Ok(ipc) => {
+                    client = Some(ipc);
                     warned_connect = false;
                     eprintln!("[discord-rpc] connected");
-                    // Force a refresh after reconnect.
                     if last_sent.is_some() && pending.is_none() {
                         pending = last_sent.clone();
                     }
@@ -219,7 +216,12 @@ fn worker_loop(client_id: String, config: DiscordRpcConfig, rx: Receiver<Cmd>) {
             continue;
         }
 
-        match push_activity(&mut client, &config, &status, session_start) {
+        let Some(ipc) = client.as_mut() else {
+            pending = Some(status);
+            continue;
+        };
+
+        match push_activity(ipc, &config, &status, session_start) {
             Ok(()) => {
                 let formatted = format_presence(&status);
                 eprintln!(
@@ -231,10 +233,10 @@ fn worker_loop(client_id: String, config: DiscordRpcConfig, rx: Receiver<Cmd>) {
             }
             Err(error) => {
                 eprintln!("[discord-rpc] set_activity failed ({error}); reconnecting");
-                connected = false;
+                if let Some(mut old) = client.take() {
+                    old.close();
+                }
                 pending = Some(status);
-                let _ = client.close();
-                client = DiscordIpcClient::new(&client_id);
                 next_reconnect = Instant::now() + RECONNECT_INTERVAL;
             }
         }
@@ -242,40 +244,31 @@ fn worker_loop(client_id: String, config: DiscordRpcConfig, rx: Receiver<Cmd>) {
 }
 
 fn push_activity(
-    client: &mut DiscordIpcClient,
+    client: &mut DiscordIpc,
     config: &DiscordRpcConfig,
     status: &PresenceStatus,
     session_start: i64,
-) -> Result<(), discord_rich_presence::error::Error> {
+) -> Result<(), crate::ipc::IpcError> {
     let formatted = format_presence(status);
-    let timestamps = Timestamps::new().start(session_start);
-
-    if !config.large_image.trim().is_empty() {
-        let assets = Assets::new()
-            .large_image(config.large_image.as_str())
-            .large_text(config.large_text.as_str());
-        let activity = Activity::new()
-            .activity_type(ActivityType::Playing)
-            .details(formatted.details.as_str())
-            .state(formatted.state.as_str())
-            .assets(assets)
-            .timestamps(timestamps.clone());
-        if client.set_activity(activity).is_ok() {
+    let image = config.large_image.trim();
+    if !image.is_empty() {
+        if client
+            .set_activity(
+                &formatted,
+                session_start,
+                Some(image),
+                config.large_text.as_str(),
+            )
+            .is_ok()
+        {
             return Ok(());
         }
-        // Missing Rich Presence art asset — fall back to text-only.
         eprintln!(
             "[discord-rpc] activity with image {:?} failed; retrying text-only",
             config.large_image
         );
     }
-
-    let activity = Activity::new()
-        .activity_type(ActivityType::Playing)
-        .details(formatted.details.as_str())
-        .state(formatted.state.as_str())
-        .timestamps(timestamps);
-    client.set_activity(activity)
+    client.set_activity(&formatted, session_start, None, config.large_text.as_str())
 }
 
 fn unix_now_secs() -> i64 {

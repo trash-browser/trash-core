@@ -6,12 +6,14 @@
 //! - **timer** — session elapsed since [`DiscordRpc::start`]
 //! - **art** — large image asset key (upload as `logo` in the Discord app)
 //!
-//! CEF-agnostic: the browser pushes [`PresenceStatus`] updates; this crate owns
-//! the IPC worker, reconnect, and rate-limited `SET_ACTIVITY` calls.
+//! Works on Linux (Unix sockets) and Windows (named pipes). CEF-agnostic: the
+//! browser pushes [`PresenceStatus`] updates; this crate owns the IPC worker,
+//! reconnect, and rate-limited `SET_ACTIVITY` calls.
 //!
 //! Set `TRASH_DISCORD_CLIENT_ID` (or [`DiscordRpcConfig::client_id`]) to your
 //! Discord application ID. Empty / `"0"` disables RPC.
 
+mod ipc;
 mod presence;
 mod worker;
 
