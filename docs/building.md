@@ -75,8 +75,10 @@ pointing at it). Prefer `build.py` unless you have a reason not to.
 | Windows | Rust (edition 2024), MSVC build tools, Python 3, Bun or npm, Ninja |
 | Linux | Rust (edition 2024), clang/gcc + linker, X11 dev libs, Python 3, Bun or npm |
 
-The app targets **X11** on Linux (it unsets `WAYLAND_DISPLAY` at startup). Under
-Wayland it runs through Xwayland.
+The app targets **X11** on Linux (it unsets `WAYLAND_DISPLAY` / `WAYLAND_SOCKET`
+at startup and builds GPUI with the `x11` feature only — do not re-enable the
+`wayland` defaults via Cargo feature unification). Under Wayland it runs through
+Xwayland.
 
 ## Outputs
 

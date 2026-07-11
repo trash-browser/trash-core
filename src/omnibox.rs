@@ -17,6 +17,8 @@ actions!(
     [
         Backspace,
         Delete,
+        DeleteToPreviousWord,
+        DeleteToNextWord,
         Left,
         Right,
         SelectLeft,
@@ -127,6 +129,40 @@ impl Omnibox {
     fn delete(&mut self, _: &Delete, window: &mut Window, cx: &mut Context<Self>) {
         if self.selected_range.is_empty() {
             let next = self.next_boundary(self.cursor_offset());
+            if self.cursor_offset() == next {
+                window.play_system_bell();
+                return;
+            }
+            self.select_to(next, cx);
+        }
+        self.replace_text_in_range(None, "", window, cx);
+    }
+
+    fn delete_to_previous_word(
+        &mut self,
+        _: &DeleteToPreviousWord,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selected_range.is_empty() {
+            let prev = self.previous_word_boundary(self.cursor_offset());
+            if self.cursor_offset() == prev {
+                window.play_system_bell();
+                return;
+            }
+            self.select_to(prev, cx);
+        }
+        self.replace_text_in_range(None, "", window, cx);
+    }
+
+    fn delete_to_next_word(
+        &mut self,
+        _: &DeleteToNextWord,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.selected_range.is_empty() {
+            let next = self.next_word_boundary(self.cursor_offset());
             if self.cursor_offset() == next {
                 window.play_system_bell();
                 return;
@@ -286,6 +322,89 @@ impl Omnibox {
             .grapheme_indices(true)
             .find_map(|(idx, _)| (idx > offset).then_some(idx))
             .unwrap_or(self.content.len())
+    }
+
+    fn char_before(&self, end: usize) -> Option<char> {
+        if end == 0 || end > self.content.len() {
+            return None;
+        }
+        let start = self.previous_boundary(end);
+        self.content[start..end].chars().next()
+    }
+
+    fn char_at(&self, start: usize) -> Option<char> {
+        if start >= self.content.len() {
+            return None;
+        }
+        self.content[start..].chars().next()
+    }
+
+    fn is_word_char(c: char) -> bool {
+        c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | '/' | ':' | '?' | '=' | '&' | '%')
+    }
+
+    fn previous_word_boundary(&self, offset: usize) -> usize {
+        let mut i = offset.min(self.content.len());
+        if i == 0 {
+            return 0;
+        }
+        // Skip trailing whitespace.
+        while i > 0 && self.char_before(i).is_some_and(|c| c.is_whitespace()) {
+            i = self.previous_boundary(i);
+        }
+        if i == 0 {
+            return 0;
+        }
+        let Some(last) = self.char_before(i) else {
+            return 0;
+        };
+        if Self::is_word_char(last) {
+            while i > 0 && self.char_before(i).is_some_and(Self::is_word_char) {
+                i = self.previous_boundary(i);
+            }
+        } else {
+            // Punctuation / symbols: delete the whole run.
+            while i > 0
+                && self
+                    .char_before(i)
+                    .is_some_and(|c| !c.is_whitespace() && !Self::is_word_char(c))
+            {
+                i = self.previous_boundary(i);
+            }
+        }
+        i
+    }
+
+    fn next_word_boundary(&self, offset: usize) -> usize {
+        let mut i = offset.min(self.content.len());
+        let len = self.content.len();
+        if i >= len {
+            return len;
+        }
+        // Skip leading whitespace.
+        while i < len && self.char_at(i).is_some_and(|c| c.is_whitespace()) {
+            i = self.next_boundary(i);
+        }
+        if i >= len {
+            return len;
+        }
+        let Some(first) = self.char_at(i) else {
+            return len;
+        };
+        if Self::is_word_char(first) {
+            while i < len && self.char_at(i).is_some_and(Self::is_word_char) {
+                i = self.next_boundary(i);
+            }
+        } else {
+            while i < len
+                && self
+                    .char_at(i)
+                    .is_some_and(|c| !c.is_whitespace() && !Self::is_word_char(c))
+            {
+                i = self.next_boundary(i);
+            }
+        }
+        i
     }
 }
 
@@ -624,6 +743,8 @@ impl Render for Omnibox {
             .cursor(CursorStyle::IBeam)
             .on_action(cx.listener(Self::backspace))
             .on_action(cx.listener(Self::delete))
+            .on_action(cx.listener(Self::delete_to_previous_word))
+            .on_action(cx.listener(Self::delete_to_next_word))
             .on_action(cx.listener(Self::left))
             .on_action(cx.listener(Self::right))
             .on_action(cx.listener(Self::select_left))
@@ -658,6 +779,10 @@ pub fn bind_keys(cx: &mut App) {
     cx.bind_keys([
         KeyBinding::new("backspace", Backspace, Some("Omnibox")),
         KeyBinding::new("delete", Delete, Some("Omnibox")),
+        KeyBinding::new("ctrl-backspace", DeleteToPreviousWord, Some("Omnibox")),
+        KeyBinding::new("cmd-backspace", DeleteToPreviousWord, Some("Omnibox")),
+        KeyBinding::new("ctrl-delete", DeleteToNextWord, Some("Omnibox")),
+        KeyBinding::new("cmd-delete", DeleteToNextWord, Some("Omnibox")),
         KeyBinding::new("left", Left, Some("Omnibox")),
         KeyBinding::new("right", Right, Some("Omnibox")),
         KeyBinding::new("shift-left", SelectLeft, Some("Omnibox")),

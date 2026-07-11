@@ -31,6 +31,9 @@ gpui_windows.workspace = true
 gpui = { workspace = true, features = ["windows-manifest"] }
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
+# default-features must stay off: gpui_linux defaults to wayland+x11, and
+# enabling wayland makes guess_compositor prefer Wayland — CEF needs an X11
+# parent window handle for the embedded content child.
 gpui_linux.workspace = true
 
 [target.'cfg(target_family = "wasm")'.dependencies]

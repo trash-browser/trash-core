@@ -149,13 +149,15 @@ YouTube serves ads inline in the same responses as the video, so cancelling
 network requests breaks playback. Instead, `youtube.rs` rewrites the **response
 body**:
 
-- `classify_youtube_response(url, mime)` recognizes two shapes on YouTube hosts:
-  - `PlayerJson` — `/youtubei/v1/player` with a JSON mime.
-  - `WatchHtml` — `/watch` or `/embed/…` with an HTML mime.
+- `classify_youtube_response(url, mime)` recognizes YouTube hosts:
+  - `ApiJson` — `/youtubei/…` (and a few player helpers) with a JSON mime.
+  - `WatchHtml` — watch / embed / home / search / channel HTML.
 - `sanitize_youtube_response` removes ad keys (`adPlacements`, `playerAds`,
-  `adSlots`, `adPlacementConfig`) from the JSON, recursively. For watch HTML it
-  finds the embedded `ytInitialPlayerResponse` object (brace-matched, string- and
-  escape-aware) and sanitizes that JSON in place.
+  `adSlots`, `adPlacementConfig`, `*AdRenderer`, …) from the JSON, recursively.
+  For HTML it finds embedded `ytInitialPlayerResponse` **and** `ytInitialData`
+  objects (brace-matched, string- and escape-aware) and sanitizes those in place.
+- Network filters still cancel `pagead` / `doubleclick` / similar; only media and
+  player payloads are exempt (rewritten instead of cancelled).
 
 `cef_host.rs` drives this with a streaming `ResponseFilter`
 (`YoutubeAdResponseFilter` + `YoutubeFilterState`): it buffers the body up to

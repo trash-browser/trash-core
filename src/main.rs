@@ -9,9 +9,11 @@ use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 use gpui::{
-    Animation, AnimationExt as _, App, AssetSource, Bounds, Context, Entity, Focusable, Image,
-    ImageFormat, MouseButton, SharedString, TitlebarOptions, Transformation, Window, WindowBounds,
-    WindowControlArea, WindowOptions, div, img, percentage, prelude::*, px, rgb, size, svg,
+    Animation, AnimationExt as _, App, AssetSource, Bounds, Context, Entity, FocusHandle,
+    Focusable, Image, ImageFormat, KeyDownEvent, KeyUpEvent, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, ScrollWheelEvent, SharedString, TitlebarOptions, Transformation,
+    Window, WindowBounds, WindowControlArea, WindowDecorations, WindowOptions, div, img,
+    percentage, prelude::*, px, rgb, size, svg,
 };
 use gpui_platform::application;
 
@@ -95,6 +97,10 @@ struct Root {
     active: u64,
     next_id: u64,
     omnibox: Entity<Omnibox>,
+    /// Focus target for the page area so OSR key events reach CEF after click.
+    content_focus: FocusHandle,
+    /// True while a mouse button pressed on the page is held (drag outside page).
+    page_pointer_down: bool,
     can_back: bool,
     can_forward: bool,
     loading: bool,
@@ -136,11 +142,12 @@ impl Root {
         })
         .detach();
 
-        // External CEF message pump + UI event drain.
+        // External CEF message pump + UI event drain (delay from CEF schedule).
         cx.spawn(async move |this, cx| {
             loop {
+                let delay = cef_host::next_pump_delay_ms();
                 cx.background_executor()
-                    .timer(Duration::from_millis(10))
+                    .timer(Duration::from_millis(delay))
                     .await;
                 this.update(cx, |this, cx| {
                     this.pump_cef(cx);
@@ -160,6 +167,8 @@ impl Root {
             active: 1,
             next_id: 2,
             omnibox,
+            content_focus: cx.focus_handle(),
+            page_pointer_down: false,
             can_back: false,
             can_forward: false,
             loading: false,
@@ -189,6 +198,9 @@ impl Root {
     fn pump_cef(&mut self, cx: &mut Context<Self>) {
         let mut events = Vec::new();
         cef_host::pump(&self.cef_rx, &mut events);
+        if events.is_empty() {
+            return;
+        }
         for ev in events {
             self.on_cef_event(ev, cx);
         }
@@ -439,14 +451,50 @@ impl Render for Root {
             .bg(rgb(BG))
             .text_color(rgb(TEXT))
             .text_sm()
+            // Window-level drag tracking: page handlers stop when the pointer
+            // leaves the page hitbox, so keep forwarding while a button is down.
+            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, _cx| {
+                if this.page_pointer_down {
+                    cef_host::send_mouse_move(event, window);
+                }
+            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, event: &MouseUpEvent, window, _cx| {
+                    if this.page_pointer_down {
+                        this.page_pointer_down = false;
+                        cef_host::send_mouse_click_up(event, window);
+                    }
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Right,
+                cx.listener(|this, event: &MouseUpEvent, window, _cx| {
+                    if this.page_pointer_down {
+                        this.page_pointer_down = false;
+                        cef_host::send_mouse_click_up(event, window);
+                    }
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Middle,
+                cx.listener(|this, event: &MouseUpEvent, window, _cx| {
+                    if this.page_pointer_down {
+                        this.page_pointer_down = false;
+                        cef_host::send_mouse_click_up(event, window);
+                    }
+                }),
+            )
             .child(self.titlebar(window.is_maximized(), cx))
             .child(self.toolbar(can_back, can_forward, cx))
             .child(
-                // Clicking the page area (when GPUI receives the hit) returns
-                // keyboard focus to CEF. The native child also SetFocus's itself
-                // on click; this covers the case where chrome still owns focus.
+                // Page hit-target: on Linux OSR, GPUI owns input and we forward
+                // mouse/scroll/keys into CEF. On Windows the native CEF child gets
+                // OS input directly; these handlers still steal focus back.
                 div()
                     .id("page")
+                    .track_focus(&self.content_focus)
+                    .occlude()
                     .flex()
                     .flex_1()
                     .w_full()
@@ -454,11 +502,66 @@ impl Render for Root {
                     .child(content_surface())
                     .on_mouse_down(
                         MouseButton::Left,
-                        cx.listener(|_this, _, window, _cx| {
-                            window.blur();
+                        cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                            this.page_pointer_down = true;
+                            window.focus(&this.content_focus, cx);
                             cef_host::focus_content();
+                            cef_host::send_mouse_click(event, window, false);
                         }),
-                    ),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Right,
+                        cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                            this.page_pointer_down = true;
+                            window.focus(&this.content_focus, cx);
+                            cef_host::focus_content();
+                            cef_host::send_mouse_click(event, window, false);
+                        }),
+                    )
+                    .on_mouse_down(
+                        MouseButton::Middle,
+                        cx.listener(|this, event: &MouseDownEvent, window, cx| {
+                            this.page_pointer_down = true;
+                            window.focus(&this.content_focus, cx);
+                            cef_host::focus_content();
+                            cef_host::send_mouse_click(event, window, false);
+                        }),
+                    )
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this, event: &MouseUpEvent, window, _cx| {
+                            this.page_pointer_down = false;
+                            cef_host::send_mouse_click_up(event, window);
+                        }),
+                    )
+                    .on_mouse_up(
+                        MouseButton::Right,
+                        cx.listener(|this, event: &MouseUpEvent, window, _cx| {
+                            this.page_pointer_down = false;
+                            cef_host::send_mouse_click_up(event, window);
+                        }),
+                    )
+                    .on_mouse_up(
+                        MouseButton::Middle,
+                        cx.listener(|this, event: &MouseUpEvent, window, _cx| {
+                            this.page_pointer_down = false;
+                            cef_host::send_mouse_click_up(event, window);
+                        }),
+                    )
+                    .on_mouse_move(cx.listener(|_this, event: &MouseMoveEvent, window, _cx| {
+                        cef_host::send_mouse_move(event, window);
+                    }))
+                    .on_scroll_wheel(cx.listener(|_this, event: &ScrollWheelEvent, window, _cx| {
+                        cef_host::send_mouse_wheel(event, window);
+                    }))
+                    .on_key_down(cx.listener(|_this, event: &KeyDownEvent, _window, cx| {
+                        cef_host::send_key_down(event);
+                        cx.stop_propagation();
+                    }))
+                    .on_key_up(cx.listener(|_this, event: &KeyUpEvent, _window, cx| {
+                        cef_host::send_key_up(event);
+                        cx.stop_propagation();
+                    })),
             )
     }
 }
@@ -802,6 +905,30 @@ fn urlencode(s: &str) -> String {
     out
 }
 
+/// CEF's cefsimple installs these so a BadWindow / BadMatch from the shared
+/// X display doesn't take down the whole browser process.
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+fn install_x11_error_handlers() {
+    use std::os::raw::c_int;
+    use x11_dl::xlib::{Display, XErrorEvent, Xlib};
+
+    unsafe extern "C" fn ignore_x_error(_display: *mut Display, _event: *mut XErrorEvent) -> c_int {
+        0
+    }
+    unsafe extern "C" fn ignore_x_io_error(_display: *mut Display) -> c_int {
+        0
+    }
+
+    let Ok(xlib) = Xlib::open() else {
+        eprintln!("[boot] warning: could not load libX11 to install error handlers");
+        return;
+    };
+    unsafe {
+        (xlib.XSetErrorHandler)(Some(ignore_x_error));
+        (xlib.XSetIOErrorHandler)(Some(ignore_x_io_error));
+    }
+}
+
 fn main() {
     // GPUI's Windows DirectComposition root visual covers native child HWNDs.
     // This browser embeds CEF as a child, so use GPUI's HWND swap-chain path.
@@ -814,6 +941,10 @@ fn main() {
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     unsafe {
         std::env::remove_var("WAYLAND_DISPLAY");
+        std::env::remove_var("WAYLAND_SOCKET");
+        // Match cefsimple: without these, non-fatal X errors abort the process
+        // when CEF (Xlib) and GPUI (xcb) share the display.
+        install_x11_error_handlers();
     }
 
     // Must live for the whole process — MainArgs points into its argv storage.
@@ -840,6 +971,10 @@ fn main() {
                     appears_transparent: true,
                     ..Default::default()
                 }),
+                // Use our custom titlebar (tabs + window controls), not the
+                // compositor's. On Windows appears_transparent already hides
+                // the system caption; on Linux this requests client-side decor.
+                window_decorations: Some(WindowDecorations::Client),
                 ..Default::default()
             },
             |window, cx| {

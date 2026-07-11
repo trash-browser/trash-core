@@ -135,8 +135,13 @@ Deeper module maps live in [architecture.md](architecture.md),
 - **DirectComposition is disabled on Windows** (`GPUI_DISABLE_DIRECT_COMPOSITION=1`
   set in `main`) because GPUI's DirectComposition root visual would cover the
   native CEF child HWND. The app uses GPUI's HWND swap-chain path instead.
-- **Wayland is removed on Linux** (`WAYLAND_DISPLAY` unset) — CEF child windows
-  need an X11 parent, so the app prefers X11/Xwayland.
+- **Wayland is removed on Linux** (`WAYLAND_DISPLAY` / `WAYLAND_SOCKET` unset)
+  and GPUI is built with the **x11 feature only** — CEF child windows need an
+  X11 parent. Do not re-enable `gpui`/`gpui_linux` wayland defaults via feature
+  unification or `ContentSurface` will see a Wayland handle and refuse to attach.
+- **Linux content uses windowless CEF (OSR)** painted into a plain X11 host
+  child under the GPUI window. Alloy's native-child path fails under Xwayland
+  (invalid Ozone xids / GPU SIGSEGV against GPUI's Vulkan surface).
 - The process is **re-entrant as CEF helpers.** `main` calls `cef_host::init`,
   which returns `None` when the current process is a CEF sub-process (renderer,
   GPU, etc.); in that case the process does its CEF work and exits before any

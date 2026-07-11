@@ -81,7 +81,12 @@ fn parent_and_rect(window: &Window, bounds: Bounds<Pixels>) -> Option<(u64, cef:
         RawWindowHandle::Xlib(h) => h.window as u64,
         RawWindowHandle::Xcb(h) => h.window.get() as u64,
         RawWindowHandle::Win32(h) => h.hwnd.get() as u64,
-        _ => return None,
+        other => {
+            // CEF can only parent under X11/Win32. A Wayland handle usually means
+            // the gpui wayland feature was pulled in via Cargo feature unification.
+            eprintln!("[content] unsupported window handle for CEF parent: {other:?}");
+            return None;
+        }
     };
 
     let device = bounds.to_device_pixels(window.scale_factor());

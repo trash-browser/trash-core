@@ -32,6 +32,9 @@ const DEFAULT_SOURCES: &[FilterListSource] = &[
     },
 ];
 
+/// Always-on YouTube network filters (merged after EasyList / EasyPrivacy).
+const BUILTIN_YOUTUBE_FILTERS: &str = include_str!("filters/youtube.txt");
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FilterListStatus {
@@ -145,6 +148,9 @@ fn update_filter_lists(cache_directory: &Path, service: &AdBlockService, shared:
         return;
     }
 
+    // Ship YouTube network filters immediately, even before EasyList downloads.
+    install(service, &HashMap::new());
+
     let mut effective = load_cached_lists(cache_directory);
     if !effective.is_empty() {
         install(service, &effective);
@@ -198,9 +204,11 @@ fn load_cached_lists(cache_directory: &Path) -> HashMap<&'static str, String> {
 }
 
 fn install(service: &AdBlockService, lists: &HashMap<&'static str, String>) {
-    let ordered = DEFAULT_SOURCES
+    let mut ordered: Vec<String> = DEFAULT_SOURCES
         .iter()
-        .filter_map(|source| lists.get(source.id).cloned());
+        .filter_map(|source| lists.get(source.id).cloned())
+        .collect();
+    ordered.push(BUILTIN_YOUTUBE_FILTERS.to_string());
     let engine = BraveAdBlockEngine::from_filter_lists(ordered);
     service.replace_engine(EngineSnapshot::new(engine));
 }

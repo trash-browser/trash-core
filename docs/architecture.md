@@ -20,7 +20,9 @@ Downloads, Ad-block manager).
 1. On Windows, sets `GPUI_DISABLE_DIRECT_COMPOSITION=1` so GPUI uses the HWND
    swap-chain path — DirectComposition's root visual would otherwise paint over
    the native CEF child HWND.
-2. On Linux/FreeBSD, unsets `WAYLAND_DISPLAY` so CEF gets an X11 parent window.
+2. On Linux/FreeBSD, unsets `WAYLAND_DISPLAY`/`WAYLAND_SOCKET` and builds GPUI
+   with the X11 feature only so the window handle CEF parents under is an X11
+   xid (not a Wayland surface).
 3. Builds `cef::args::Args` (must outlive the process — `MainArgs` points into
    its argv storage) and calls `cef_host::init(&args)`.
 

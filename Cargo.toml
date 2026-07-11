@@ -12,15 +12,20 @@ path = "src/main.rs"
 anyhow = "1"
 cef = { version = "=150.0.0", default-features = false }
 gpui = { path = "crates/gpui", default-features = false, features = ["font-kit"] }
-gpui_platform = { path = "crates/gpui/crates/gpui_platform", features = ["font-kit"] }
+gpui_platform = { path = "crates/gpui/crates/gpui_platform", default-features = false, features = ["font-kit"] }
 raw-window-handle = "0.6"
 trash_adblock = { path = "crates/trash_adblock" }
 unicode-segmentation = "1"
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
 gpui = { path = "crates/gpui", default-features = false, features = ["x11"] }
-gpui_platform = { path = "crates/gpui/crates/gpui_platform", features = ["x11"] }
+gpui_platform = { path = "crates/gpui/crates/gpui_platform", default-features = false, features = ["x11"] }
+# Pin gpui_linux to X11 only. Its package default enables wayland, which
+# (via feature unification) would make GPUI open a Wayland surface that CEF
+# cannot parent a child window under.
+gpui_linux = { path = "crates/gpui/crates/gpui_linux", default-features = false, features = ["x11"] }
 x11-dl = "2"
+libc = "0.2"
 
 [target.'cfg(target_os = "windows")'.build-dependencies]
 embed-resource = "3"

@@ -139,18 +139,46 @@ fn should_bypass_url(url: &str) -> bool {
 }
 
 fn should_use_youtube_response_sanitizer(request: &AdBlockRequest<'_>) -> bool {
-    let document_host = url::Url::parse(request.document_url)
-        .ok()
-        .and_then(|url| url.host_str().map(str::to_ascii_lowercase));
-    let request_host = url::Url::parse(request.url)
-        .ok()
-        .and_then(|url| url.host_str().map(str::to_ascii_lowercase));
-    document_host
-        .as_deref()
-        .is_some_and(is_youtube_document_host)
-        && request_host
-            .as_deref()
-            .is_some_and(is_youtube_playback_host)
+    // Only protect media / player payloads that EasyList would wrongly cancel.
+    // Everything else on youtube.com (pagead, ptracking, …) still goes through
+    // the network engine so ads can be blocked at request time.
+    let Ok(url) = url::Url::parse(request.url) else {
+        return false;
+    };
+    let host = url
+        .host_str()
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    let path = url.path();
+    let lower_url = request.url.to_ascii_lowercase();
+
+    if host == "googlevideo.com" || host.ends_with(".googlevideo.com") {
+        // Known ad stream markers — let the engine cancel these.
+        if lower_url.contains("&oad=")
+            || lower_url.contains("ctier=a")
+            || lower_url.contains("/ptracking")
+        {
+            return false;
+        }
+        return true;
+    }
+
+    if !(is_youtube_document_host(&host) || host == "youtubei.googleapis.com") {
+        return false;
+    }
+
+    // Main document navigations + player APIs are rewritten by the response filter.
+    if request.is_navigation
+        || path == "/youtubei/v1/player"
+        || path.starts_with("/youtubei/v1/player/")
+        || path == "/youtubei/v1/get_watch"
+        || path.starts_with("/youtubei/v1/get_watch")
+        || path == "/get_video_info"
+    {
+        return true;
+    }
+
+    false
 }
 
 fn is_youtube_document_host(host: &str) -> bool {
@@ -158,15 +186,6 @@ fn is_youtube_document_host(host: &str) -> bool {
         || host.ends_with(".youtube.com")
         || host == "youtube-nocookie.com"
         || host.ends_with(".youtube-nocookie.com")
-}
-
-fn is_youtube_playback_host(host: &str) -> bool {
-    is_youtube_document_host(host)
-        || host == "youtubei.googleapis.com"
-        || host == "googlevideo.com"
-        || host.ends_with(".googlevideo.com")
-        || host == "ytimg.com"
-        || host.ends_with(".ytimg.com")
 }
 
 #[cfg(test)]
@@ -255,6 +274,14 @@ mod tests {
         assert_eq!(
             service.check(&request(
                 "https://securepubads.g.doubleclick.net/tag/js/gpt.js",
+                "https://www.youtube.com/watch?v=abc"
+            )),
+            AdBlockDecision::Block
+        );
+        // Non-playback YouTube ad endpoints must still be network-blocked.
+        assert_eq!(
+            service.check(&request(
+                "https://www.youtube.com/pagead/adview",
                 "https://www.youtube.com/watch?v=abc"
             )),
             AdBlockDecision::Block

@@ -1,0 +1,36 @@
+[Adblock Plus 2.0]
+! Title: Trash Browser YouTube
+! Network filters for YouTube ad endpoints (playback stays on response sanitizer)
+||youtube.com/pagead^
+||youtube.com/pagead/
+||www.youtube.com/pagead^
+||youtube.com/ptracking^
+||youtube.com/api/stats/ads^
+||youtube.com/api/stats/atr^
+||youtube.com/api/stats/qoe?*$domain=youtube.com
+||youtube.com/get_midroll^
+||youtube.com/get_video_info?*adunit
+||youtube.com/pcs/activeview^
+||youtube.com/pcs/view^
+||youtube.com/pagead/adview^
+||youtube.com/pagead/conversion^
+||youtube.com/pagead/interactive-media-ads^
+||youtube.com/youtubei/v1/log_event?
+||youtube.com/youtubei/v1/att/log?
+||youtube.com/youtubei/v1/player/ad_
+||youtube.com/ad_data_by_keyword^
+||youtube.com/generate_204?*&oad=
+||youtube.com/generate_204?*ctier=A
+||youtu.be/pagead^
+||youtube-nocookie.com/pagead^
+||googlevideo.com/*&oad=
+||googlevideo.com/*ctier=A
+||googlevideo.com/ptracking^
+||googleads.
+||googleadservices.com^
+||doubleclick.net^
+||googlesyndication.com^
+||google.com/pagead^
+||youtube.googleapis.com/youtubei/v1/player/ad_
+||s.ytimg.com/*/ad_
+||i.ytimg.com/*/ad_

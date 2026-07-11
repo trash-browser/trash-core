@@ -6,7 +6,7 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{
     Arc, Mutex, OnceLock,
-    atomic::{AtomicU64, Ordering},
+    atomic::{AtomicI64, AtomicU64, Ordering},
 };
 use trash_adblock::{
     AdBlockAdapter, AdBlockDecision, AdBlockService, AdBlockServiceBuilder, AdapterRequest,
@@ -75,9 +75,17 @@ struct Shared {
     pending_nav: HashMap<u64, String>,
     /// Native parent window + last content bounds (device pixels).
     parent: Option<u64>,
+    /// On Linux, a plain X11 child we own under `parent`. CEF parents under this
+    /// host instead of the Vulkan/WGPU surface window — Chromium's child window
+    /// creation fails against the GPUI window directly (XGetWindowAttributes
+    /// BadDrawable on the CEF xid).
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    host_xid: Option<u64>,
     bounds: Rect,
     start_uri: String,
     context_ready: bool,
+    /// Linux OSR: GPUI owns OS focus; keep CEF browser focus in sync for typing.
+    content_input_active: bool,
 }
 
 impl Shared {
@@ -184,6 +192,8 @@ pub fn init(args: &Args) -> Option<Receiver<CefEvent>> {
         creating: VecDeque::new(),
         pending_nav: HashMap::new(),
         parent: None,
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        host_xid: None,
         bounds: Rect {
             x: 0,
             y: 0,
@@ -192,11 +202,14 @@ pub fn init(args: &Args) -> Option<Receiver<CefEvent>> {
         },
         start_uri: String::new(),
         context_ready: false,
+        content_input_active: false,
     })));
 
     let settings = Settings {
         no_sandbox: 1,
         external_message_pump: 1,
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        windowless_rendering_enabled: 1,
         root_cache_path: CefString::from(cache_dir.to_string_lossy().as_ref()),
         ..Default::default()
     };
@@ -207,7 +220,13 @@ pub fn init(args: &Args) -> Option<Receiver<CefEvent>> {
         Some(&mut app),
         sandbox_info,
     );
-    assert_eq!(ok, 1, "cef initialize failed");
+    if ok != 1 {
+        // Chromium's process singleton may refuse a second instance and ask the
+        // existing one to focus — treat that as a clean exit, not a panic.
+        let code = get_exit_code();
+        eprintln!("[cef] initialize failed (ok={ok}, exit_code={code})");
+        std::process::exit(if code != 0 { code } else { 1 });
+    }
 
     // Keep the App wrapper alive for the process lifetime (CEF also refs it).
     std::mem::forget(app);
@@ -249,17 +268,43 @@ pub fn shutdown_cef() {
     shutdown();
 }
 
-/// Drive CEF from the GPUI main thread. Call ~every 10ms.
+/// Drive CEF from the GPUI main thread.
 pub fn pump(rx: &Receiver<CefEvent>, out: &mut Vec<CefEvent>) {
     do_message_loop_work();
-    push_adblock_statistics(false);
+    // Adblock stats are for the shell new-tab page only; check infrequently.
+    static AD_TICK: AtomicU64 = AtomicU64::new(0);
+    if AD_TICK.fetch_add(1, Ordering::Relaxed) % 8 == 0 {
+        push_adblock_statistics(false);
+    }
     loop {
         match rx.try_recv() {
             Ok(ev) => out.push(ev),
-            Err(TryRecvError::Empty) => break,
-            Err(TryRecvError::Disconnected) => break,
+            Err(TryRecvError::Empty) | Err(TryRecvError::Disconnected) => break,
         }
     }
+}
+
+/// Suggested delay until the next `pump` call (from CEF's external pump schedule).
+pub fn next_pump_delay_ms() -> u64 {
+    // Clamp so we stay responsive to input even when CEF asks for a long sleep.
+    NEXT_PUMP_DELAY_MS
+        .load(Ordering::Relaxed)
+        .clamp(1, 16) as u64
+}
+
+static NEXT_PUMP_DELAY_MS: AtomicI64 = AtomicI64::new(10);
+
+fn cef_debug() -> bool {
+    static DEBUG: OnceLock<bool> = OnceLock::new();
+    *DEBUG.get_or_init(|| std::env::var_os("TRASH_CEF_DEBUG").is_some())
+}
+
+macro_rules! cef_debug {
+    ($($t:tt)*) => {
+        if cef_debug() {
+            eprintln!($($t)*);
+        }
+    };
 }
 
 fn push_adblock_statistics(force: bool) {
@@ -353,12 +398,23 @@ pub fn set_parent_bounds(parent_xid: u64, bounds: Rect) {
             || s.bounds.width != bounds.width
             || s.bounds.height != bounds.height;
         s.bounds = bounds.clone();
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        if let Ok(mut cached) = CACHED_BOUNDS.lock() {
+            *cached = bounds.clone();
+        }
 
         if s.parent != Some(parent_xid) || bounds_changed {
-            eprintln!(
+            cef_debug!(
                 "[cef] layout parent=0x{parent_xid:x} rect=({},{} {}x{})",
                 bounds.x, bounds.y, bounds.width, bounds.height
             );
+        }
+
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        {
+            if let Some(host) = ensure_linux_host_window(&mut s, parent_xid, &bounds) {
+                let _ = host;
+            }
         }
 
         if s.parent != Some(parent_xid) {
@@ -468,6 +524,9 @@ pub fn focus_chrome() {
     unsafe extern "system" {
         fn SetFocus(hwnd: isize) -> isize;
     }
+    if let Ok(mut s) = shared().lock() {
+        s.content_input_active = false;
+    }
     let parent = shared().lock().ok().and_then(|s| s.parent);
     if let Some(parent) = parent {
         unsafe { SetFocus(parent as isize) };
@@ -475,10 +534,19 @@ pub fn focus_chrome() {
 }
 
 #[cfg(not(target_os = "windows"))]
-pub fn focus_chrome() {}
+pub fn focus_chrome() {
+    if let Ok(mut s) = shared().lock() {
+        s.content_input_active = false;
+    }
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    retain_chrome_os_focus();
+}
 
 /// Hand keyboard focus to the active CEF content browser (page becomes typeable).
 pub fn focus_content() {
+    if let Ok(mut s) = shared().lock() {
+        s.content_input_active = true;
+    }
     let browser = shared().lock().ok().and_then(|s| s.active_browser());
     let Some(host) = browser.as_ref().and_then(Browser::host) else {
         return;
@@ -497,6 +565,440 @@ pub fn focus_content() {
             unsafe { SetFocus(hwnd.0 as isize) };
         }
     }
+    // Linux OSR: keep OS focus on the GPUI parent so key events still arrive in
+    // GPUI and can be forwarded; the host X11 paint window must not steal focus.
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    retain_chrome_os_focus();
+}
+
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+fn retain_chrome_os_focus() {
+    let display = get_xdisplay();
+    if display.is_null() {
+        return;
+    }
+    let Ok(xlib) = x11_dl::xlib::Xlib::open() else {
+        return;
+    };
+    let parent = shared().lock().ok().and_then(|s| s.parent);
+    let Some(parent) = parent else { return };
+    unsafe {
+        // RevertToParent = 2 — keep focus on the GPUI chrome window.
+        (xlib.XSetInputFocus)(display as *mut _, parent, 2, x11_dl::xlib::CurrentTime);
+        (xlib.XFlush)(display as *mut _);
+    }
+}
+
+/// Forward a GPUI key-down into the active CEF browser (needed for Linux OSR).
+pub fn send_key_down(event: &gpui::KeyDownEvent) {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = event;
+    }
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    {
+        send_key_inner(&event.keystroke, KeyPhase::Down, event.prefer_character_input);
+    }
+}
+
+/// Forward a GPUI key-up into the active CEF browser (needed for Linux OSR).
+pub fn send_key_up(event: &gpui::KeyUpEvent) {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = event;
+    }
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    {
+        send_key_inner(&event.keystroke, KeyPhase::Up, false);
+    }
+}
+
+/// Forward a GPUI mouse-down into the active CEF browser (needed for Linux OSR).
+pub fn send_mouse_click(event: &gpui::MouseDownEvent, window: &gpui::Window, _unused: bool) {
+    send_mouse_click_inner(
+        event.button,
+        event.position,
+        event.modifiers,
+        event.click_count,
+        false,
+        window,
+    );
+}
+
+/// Forward a GPUI mouse-up into the active CEF browser (needed for Linux OSR).
+pub fn send_mouse_click_up(event: &gpui::MouseUpEvent, window: &gpui::Window) {
+    send_mouse_click_inner(
+        event.button,
+        event.position,
+        event.modifiers,
+        event.click_count,
+        true,
+        window,
+    );
+}
+
+/// Forward mouse movement into CEF (Linux OSR).
+pub fn send_mouse_move(event: &gpui::MouseMoveEvent, window: &gpui::Window) {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = (event, window);
+        return;
+    }
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    {
+        let Some((x, y, inside, mut modifiers)) = view_mouse_point(event.position, window) else {
+            return;
+        };
+        // Drop duplicate moves — GPUI can spam identical positions.
+        if event.pressed_button.is_none()
+            && let Ok(last) = LAST_MOUSE.lock()
+            && last.0 == x
+            && last.1 == y
+            && last.2 == inside
+        {
+            return;
+        }
+        if let Ok(mut last) = LAST_MOUSE.lock() {
+            *last = (x, y, inside);
+        }
+        if let Some(button) = event.pressed_button {
+            modifiers |= mouse_button_flag(button);
+        }
+        modifiers |= modifier_flags(event.modifiers);
+        with_active_host(|host| {
+            let ev = MouseEvent { x, y, modifiers };
+            host.send_mouse_move_event(Some(&ev), if inside { 0 } else { 1 });
+        });
+    }
+}
+
+/// Forward scroll wheel into CEF (Linux OSR).
+pub fn send_mouse_wheel(event: &gpui::ScrollWheelEvent, window: &gpui::Window) {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = (event, window);
+        return;
+    }
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    {
+        let Some((x, y, inside, mut modifiers)) = view_mouse_point(event.position, window) else {
+            return;
+        };
+        if !inside {
+            return;
+        }
+        modifiers |= modifier_flags(event.modifiers);
+        let scale = window.scale_factor();
+        let (dx, dy) = match event.delta {
+            gpui::ScrollDelta::Pixels(pt) => (
+                (f32::from(pt.x) * scale).round() as i32,
+                (f32::from(pt.y) * scale).round() as i32,
+            ),
+            gpui::ScrollDelta::Lines(pt) => {
+                // Chromium expects pixel deltas; approximate a line as 40 device px.
+                (
+                    (pt.x * 40.0 * scale).round() as i32,
+                    (pt.y * 40.0 * scale).round() as i32,
+                )
+            }
+        };
+        // Pass GPUI's sign through unchanged (negating dy scrolled backwards).
+        with_active_host(|host| {
+            let ev = MouseEvent { x, y, modifiers };
+            host.send_mouse_wheel_event(Some(&ev), dx, dy);
+        });
+    }
+}
+
+fn send_mouse_click_inner(
+    button: gpui::MouseButton,
+    position: gpui::Point<gpui::Pixels>,
+    modifiers: gpui::Modifiers,
+    click_count: usize,
+    mouse_up: bool,
+    window: &gpui::Window,
+) {
+    #[cfg(target_os = "windows")]
+    {
+        let _ = (button, position, modifiers, click_count, mouse_up, window);
+        return;
+    }
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    {
+        let Some((x, y, inside, mut mods)) = view_mouse_point(position, window) else {
+            return;
+        };
+        if !inside && !mouse_up {
+            return;
+        }
+        mods |= modifier_flags(modifiers);
+        // On mouse-down the pressed button is included; on mouse-up it is not.
+        if !mouse_up {
+            mods |= mouse_button_flag(button);
+        }
+        let Some(btn) = cef_mouse_button(button) else {
+            return;
+        };
+        with_active_host(|host| {
+            let ev = MouseEvent {
+                x,
+                y,
+                modifiers: mods,
+            };
+            // CEF hit-testing expects a move to the click point first.
+            if !mouse_up {
+                host.send_mouse_move_event(Some(&ev), 0);
+                retain_chrome_os_focus();
+            }
+            host.send_mouse_click_event(
+                Some(&ev),
+                btn,
+                if mouse_up { 1 } else { 0 },
+                click_count.max(1) as i32,
+            );
+        });
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+static LAST_MOUSE: Mutex<(i32, i32, bool)> = Mutex::new((i32::MIN, i32::MIN, false));
+
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+static CACHED_BOUNDS: Mutex<Rect> = Mutex::new(Rect {
+    x: 0,
+    y: 0,
+    width: 1,
+    height: 1,
+});
+
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+fn with_active_host(f: impl FnOnce(&BrowserHost)) {
+    let browser = shared().lock().ok().and_then(|s| s.active_browser());
+    let Some(host) = browser.as_ref().and_then(Browser::host) else {
+        return;
+    };
+    f(&host);
+}
+
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+fn view_mouse_point(
+    position: gpui::Point<gpui::Pixels>,
+    window: &gpui::Window,
+) -> Option<(i32, i32, bool, u32)> {
+    let scale = window.scale_factor();
+    let device_x = (f32::from(position.x) * scale).round() as i32;
+    let device_y = (f32::from(position.y) * scale).round() as i32;
+    let bounds = CACHED_BOUNDS
+        .lock()
+        .ok()
+        .map(|b| (*b).clone())
+        .or_else(|| shared().lock().ok().map(|s| s.bounds.clone()))?;
+    let x = device_x - bounds.x;
+    let y = device_y - bounds.y;
+    let inside = x >= 0 && y >= 0 && x < bounds.width && y < bounds.height;
+    let x = x.clamp(0, bounds.width.saturating_sub(1).max(0));
+    let y = y.clamp(0, bounds.height.saturating_sub(1).max(0));
+    Some((x, y, inside, 0))
+}
+
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+fn cef_mouse_button(button: gpui::MouseButton) -> Option<MouseButtonType> {
+    match button {
+        gpui::MouseButton::Left => Some(MouseButtonType::LEFT),
+        gpui::MouseButton::Right => Some(MouseButtonType::RIGHT),
+        gpui::MouseButton::Middle => Some(MouseButtonType::MIDDLE),
+        _ => None,
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+fn mouse_button_flag(button: gpui::MouseButton) -> u32 {
+    match button {
+        gpui::MouseButton::Left => sys::cef_event_flags_t::EVENTFLAG_LEFT_MOUSE_BUTTON.0,
+        gpui::MouseButton::Middle => sys::cef_event_flags_t::EVENTFLAG_MIDDLE_MOUSE_BUTTON.0,
+        gpui::MouseButton::Right => sys::cef_event_flags_t::EVENTFLAG_RIGHT_MOUSE_BUTTON.0,
+        _ => 0,
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+fn modifier_flags(modifiers: gpui::Modifiers) -> u32 {
+    let mut flags = 0u32;
+    if modifiers.shift {
+        flags |= sys::cef_event_flags_t::EVENTFLAG_SHIFT_DOWN.0;
+    }
+    if modifiers.control {
+        flags |= sys::cef_event_flags_t::EVENTFLAG_CONTROL_DOWN.0;
+    }
+    if modifiers.alt {
+        flags |= sys::cef_event_flags_t::EVENTFLAG_ALT_DOWN.0;
+    }
+    if modifiers.platform {
+        flags |= sys::cef_event_flags_t::EVENTFLAG_COMMAND_DOWN.0;
+    }
+    flags
+}
+
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+enum KeyPhase {
+    Down,
+    Up,
+}
+
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+fn send_key_inner(keystroke: &gpui::Keystroke, phase: KeyPhase, prefer_character_input: bool) {
+    let Some((windows_key_code, mut character)) = map_windows_key(keystroke) else {
+        return;
+    };
+    // Shortcuts (Ctrl+Backspace, Ctrl+A, …) must not carry a character or Blink
+    // treats them as text insertion instead of editing commands.
+    let shortcut = (keystroke.modifiers.control || keystroke.modifiers.platform)
+        && !prefer_character_input;
+    let alt_menu =
+        keystroke.modifiers.alt && !prefer_character_input && !keystroke.modifiers.control;
+    if shortcut || alt_menu {
+        character = 0;
+    }
+
+    let modifiers = modifier_flags(keystroke.modifiers);
+    let is_system_key = i32::from(keystroke.modifiers.alt && !keystroke.modifiers.control);
+    let base = KeyEvent {
+        size: std::mem::size_of::<sys::cef_key_event_t>(),
+        type_: KeyEventType::RAWKEYDOWN,
+        modifiers,
+        windows_key_code,
+        native_key_code: windows_key_code,
+        is_system_key,
+        character,
+        unmodified_character: character,
+        focus_on_editable_field: 0,
+    };
+    with_active_host(|host| match phase {
+        KeyPhase::Down => {
+            let mut down = base.clone();
+            down.type_ = KeyEventType::RAWKEYDOWN;
+            host.send_key_event(Some(&down));
+
+            // Editing shortcuts need KEYDOWN as well on Linux OSR.
+            if shortcut {
+                let mut keydown = base.clone();
+                keydown.type_ = KeyEventType::KEYDOWN;
+                host.send_key_event(Some(&keydown));
+            }
+
+            if character != 0 && !shortcut && !alt_menu {
+                let mut ch = base.clone();
+                ch.type_ = KeyEventType::CHAR;
+                // CHAR events use the character as windows_key_code on Linux OSR.
+                ch.windows_key_code = character as i32;
+                if windows_key_code == 0x0D {
+                    ch.character = b'\r' as u16;
+                    ch.unmodified_character = b'\r' as u16;
+                    ch.windows_key_code = b'\r' as i32;
+                }
+                host.send_key_event(Some(&ch));
+            }
+        }
+        KeyPhase::Up => {
+            let mut up = base;
+            up.type_ = KeyEventType::KEYUP;
+            host.send_key_event(Some(&up));
+        }
+    });
+}
+
+/// Map a GPUI keystroke to a Windows VK code + UTF-16 character (0 = non-char).
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+fn map_windows_key(keystroke: &gpui::Keystroke) -> Option<(i32, u16)> {
+    let key = keystroke.key.as_str();
+    let from_name = match key {
+        "enter" => Some((0x0D, b'\r' as u16)),
+        "backspace" => Some((0x08, 0x08)),
+        "tab" => Some((0x09, b'\t' as u16)),
+        "escape" => Some((0x1B, 0x1B)),
+        "space" => Some((0x20, b' ' as u16)),
+        "pageup" => Some((0x21, 0)),
+        "pagedown" => Some((0x22, 0)),
+        "end" => Some((0x23, 0)),
+        "home" => Some((0x24, 0)),
+        "left" => Some((0x25, 0)),
+        "up" => Some((0x26, 0)),
+        "right" => Some((0x27, 0)),
+        "down" => Some((0x28, 0)),
+        "insert" => Some((0x2D, 0)),
+        "delete" => Some((0x2E, 0x7F)),
+        "f1" => Some((0x70, 0)),
+        "f2" => Some((0x71, 0)),
+        "f3" => Some((0x72, 0)),
+        "f4" => Some((0x73, 0)),
+        "f5" => Some((0x74, 0)),
+        "f6" => Some((0x75, 0)),
+        "f7" => Some((0x76, 0)),
+        "f8" => Some((0x77, 0)),
+        "f9" => Some((0x78, 0)),
+        "f10" => Some((0x79, 0)),
+        "f11" => Some((0x7A, 0)),
+        "f12" => Some((0x7B, 0)),
+        _ => None,
+    };
+    if let Some(mapped) = from_name {
+        return Some(mapped);
+    }
+
+    if let Some(text) = keystroke.key_char.as_deref() {
+        let mut chars = text.chars();
+        if let Some(ch) = chars.next()
+            && chars.next().is_none()
+        {
+            let utf16 = ch as u32;
+            if utf16 <= 0xFFFF {
+                let vk = if ch.is_ascii_alphabetic() {
+                    ch.to_ascii_uppercase() as i32
+                } else if ch.is_ascii() {
+                    // Digits / punctuation: VK matches the unshifted key when possible.
+                    keystroke
+                        .key
+                        .chars()
+                        .next()
+                        .filter(|c| c.is_ascii())
+                        .map(|c| {
+                            if c.is_ascii_alphabetic() {
+                                c.to_ascii_uppercase() as i32
+                            } else {
+                                c as i32
+                            }
+                        })
+                        .unwrap_or(ch as i32)
+                } else {
+                    0
+                };
+                return Some((vk, utf16 as u16));
+            }
+        }
+    }
+
+    // Fallback: single-key labels like "a", "1", "," without key_char.
+    let mut chars = key.chars();
+    if let Some(ch) = chars.next()
+        && chars.next().is_none()
+        && ch.is_ascii()
+    {
+        let vk = if ch.is_ascii_alphabetic() {
+            ch.to_ascii_uppercase() as i32
+        } else {
+            ch as i32
+        };
+        let character = if keystroke.modifiers.control
+            || keystroke.modifiers.alt
+            || keystroke.modifiers.platform
+        {
+            0
+        } else {
+            ch as u16
+        };
+        return Some((vk, character));
+    }
+    None
 }
 
 pub fn go_back() {
@@ -579,23 +1081,57 @@ fn drain_to_create_locked(s: &mut Shared) {
     }
 
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-    let parent = parent_raw as cef::sys::cef_window_handle_t;
+    let parent = {
+        let bounds = s.bounds.clone();
+        let Some(host) = ensure_linux_host_window(s, parent_raw, &bounds) else {
+            eprintln!("[cef] linux host window unavailable; deferring create");
+            return;
+        };
+        host as cef::sys::cef_window_handle_t
+    };
     #[cfg(target_os = "windows")]
     let parent = cef::sys::HWND(parent_raw as usize as *mut _);
 
+    // Relative to the Linux host window (which already sits at content bounds).
+    #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+    let child_bounds = Rect {
+        x: 0,
+        y: 0,
+        width: s.bounds.width.max(1),
+        height: s.bounds.height.max(1),
+    };
+    #[cfg(target_os = "windows")]
+    let child_bounds = s.bounds.clone();
+
     while let Some(pending) = s.to_create.pop_front() {
         eprintln!(
-            "[cef] create tab={} parent=0x{parent_raw:x} rect=({},{} {}x{}) url={}",
-            pending.tab_id, s.bounds.x, s.bounds.y, s.bounds.width, s.bounds.height, pending.url
+            "[cef] create tab={} gpui=0x{parent_raw:x} host=0x{parent:x} rect=({},{} {}x{}) url={}",
+            pending.tab_id,
+            child_bounds.x,
+            child_bounds.y,
+            child_bounds.width,
+            child_bounds.height,
+            pending.url
         );
 
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        let window_info = WindowInfo::default().set_as_windowless(parent);
+        #[cfg(target_os = "windows")]
         let window_info = WindowInfo {
             runtime_style: RuntimeStyle::ALLOY,
             ..Default::default()
         }
-        .set_as_child(parent, &s.bounds);
+        .set_as_child(parent, &child_bounds);
 
         let mut client = ContentClient::new();
+        #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+        let settings = {
+            // Opaque background so OSR doesn't stay transparent/black forever.
+            let mut s = BrowserSettings::default();
+            s.background_color = 0xff_0f_0f_10;
+            s
+        };
+        #[cfg(target_os = "windows")]
         let settings = BrowserSettings::default();
         let ok = browser_host_create_browser(
             Some(&window_info),
@@ -611,6 +1147,84 @@ fn drain_to_create_locked(s: &mut Shared) {
         }
         s.creating.push_back(pending);
     }
+}
+
+/// Create (or resize) a plain X11 child under the GPUI window for CEF to parent
+/// into. Returns the host xid.
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+fn ensure_linux_host_window(s: &mut Shared, parent_xid: u64, bounds: &Rect) -> Option<u64> {
+    let display = get_xdisplay();
+    if display.is_null() {
+        eprintln!("[cef] ensure_linux_host: cef_get_xdisplay null");
+        return None;
+    }
+    let Ok(xlib) = x11_dl::xlib::Xlib::open() else {
+        eprintln!("[cef] ensure_linux_host: libX11 open failed");
+        return None;
+    };
+
+    let width = bounds.width.max(1) as u32;
+    let height = bounds.height.max(1) as u32;
+
+    if let Some(host) = s.host_xid {
+        unsafe {
+            (xlib.XMoveResizeWindow)(
+                display as *mut _,
+                host,
+                bounds.x,
+                bounds.y,
+                width,
+                height,
+            );
+            (xlib.XMapRaised)(display as *mut _, host);
+            (xlib.XFlush)(display as *mut _);
+        }
+        return Some(host);
+    }
+
+    let host = unsafe {
+        let screen = (xlib.XDefaultScreen)(display as *mut _);
+        let black = (xlib.XBlackPixel)(display as *mut _, screen);
+        // Dark fill matching the GPUI placeholder until CEF paints.
+        let background = 0x000f0f10_u64;
+        let win = (xlib.XCreateSimpleWindow)(
+            display as *mut _,
+            parent_xid,
+            bounds.x,
+            bounds.y,
+            width,
+            height,
+            0,
+            black,
+            background,
+        );
+        if win == 0 {
+            eprintln!("[cef] ensure_linux_host: XCreateSimpleWindow failed");
+            return None;
+        }
+        // Paint-only child: never take keyboard focus (GPUI must keep OS focus
+        // so OSR key/mouse forwarding keeps working).
+        let mut hints: x11_dl::xlib::XWMHints = std::mem::zeroed();
+        hints.flags = x11_dl::xlib::InputHint;
+        hints.input = 0;
+        (xlib.XSetWMHints)(display as *mut _, win, &mut hints);
+        (xlib.XSelectInput)(
+            display as *mut _,
+            win,
+            x11_dl::xlib::ExposureMask | x11_dl::xlib::StructureNotifyMask,
+        );
+        (xlib.XMapRaised)(display as *mut _, win);
+        (xlib.XFlush)(display as *mut _);
+        win
+    };
+    eprintln!("[cef] linux host window=0x{host:x} under parent=0x{parent_xid:x}");
+    s.host_xid = Some(host);
+    OSR_HOST_XID.store(host, Ordering::Relaxed);
+    // Drop cached GC/visual so the next paint rebinds to the new host.
+    if let Ok(mut target) = OSR_TARGET.lock() {
+        *target = None;
+    }
+    Some(host)
 }
 
 /// Show or hide a content browser's native child window.
@@ -630,36 +1244,21 @@ fn set_child_visible(browser: &Browser, visible: bool) {
 }
 
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-fn set_child_visible(browser: &Browser, visible: bool) {
-    let Some(host) = browser.host() else { return };
-    let xid = host.window_handle();
-    if xid == 0 {
-        return;
+fn resize_child(browser: &Browser, bounds: &Rect) {
+    // OSR: only the host X11 window is real; tell CEF the view size changed.
+    if let Ok(mut s) = shared().lock()
+        && let Some(parent) = s.parent
+    {
+        let _ = ensure_linux_host_window(&mut s, parent, bounds);
     }
-    let display = get_xdisplay();
-    if display.is_null() {
-        return;
-    }
-    let Ok(xlib) = x11_dl::xlib::Xlib::open() else {
-        return;
-    };
-    unsafe {
-        if visible {
-            (xlib.XMapWindow)(display as *mut _, xid);
-        } else {
-            (xlib.XUnmapWindow)(display as *mut _, xid);
-        }
-        (xlib.XFlush)(display as *mut _);
+    if let Some(host) = browser.host() {
+        host.was_resized();
+        host.invalidate(PaintElementType::VIEW);
     }
 }
 
 #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-fn resize_child(browser: &Browser, bounds: &Rect) {
-    let Some(host) = browser.host() else { return };
-    let xid = host.window_handle();
-    if xid == 0 {
-        return;
-    }
+fn set_child_visible(browser: &Browser, visible: bool) {
     let display = get_xdisplay();
     if display.is_null() {
         return;
@@ -667,18 +1266,17 @@ fn resize_child(browser: &Browser, bounds: &Rect) {
     let Ok(xlib) = x11_dl::xlib::Xlib::open() else {
         return;
     };
+    let host_xid = shared().lock().ok().and_then(|s| s.host_xid);
+    let Some(host_xid) = host_xid else { return };
     unsafe {
-        (xlib.XMoveResizeWindow)(
-            display as *mut _,
-            xid,
-            bounds.x,
-            bounds.y,
-            bounds.width.max(1) as u32,
-            bounds.height.max(1) as u32,
-        );
+        if visible {
+            (xlib.XMapRaised)(display as *mut _, host_xid);
+        } else {
+            (xlib.XUnmapWindow)(display as *mut _, host_xid);
+        }
         (xlib.XFlush)(display as *mut _);
     }
-    host.notify_move_or_resize_started();
+    let _ = browser;
 }
 
 #[cfg(target_os = "windows")]
@@ -837,7 +1435,17 @@ wrap_app! {
             if let Some(command_line) = command_line {
                 let ozone = CefString::from("ozone-platform");
                 if command_line.has_switch(Some(&ozone)) == 0 {
-                    command_line.append_switch_with_value(Some(&ozone), Some(&CefString::from("x11")));
+                    command_line
+                        .append_switch_with_value(Some(&ozone), Some(&CefString::from("x11")));
+                }
+                // Windowless (OSR) + software paint into our X11 host window.
+                // Avoids fighting GPUI's Vulkan surface and the broken Alloy
+                // native-child path under Xwayland (invalid Ozone xids).
+                for switch in ["disable-gpu", "disable-gpu-compositing", "disable-gpu-sandbox"] {
+                    let name = CefString::from(switch);
+                    if command_line.has_switch(Some(&name)) == 0 {
+                        command_line.append_switch(Some(&name));
+                    }
                 }
             }
             #[cfg(target_os = "windows")]
@@ -866,8 +1474,8 @@ wrap_browser_process_handler! {
             }
         }
 
-        fn on_schedule_message_pump_work(&self, _delay_ms: i64) {
-            // GPUI polls do_message_loop_work on a short timer; nothing to do.
+        fn on_schedule_message_pump_work(&self, delay_ms: i64) {
+            NEXT_PUMP_DELAY_MS.store(delay_ms.max(0), Ordering::Relaxed);
         }
     }
 }
@@ -890,6 +1498,231 @@ wrap_client! {
         }
         fn focus_handler(&self) -> Option<FocusHandler> {
             Some(ContentFocusHandler::new())
+        }
+        fn render_handler(&self) -> Option<RenderHandler> {
+            linux_render_handler()
+        }
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+fn linux_render_handler() -> Option<RenderHandler> {
+    Some(ContentRenderHandler::new())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+fn linux_render_handler() -> Option<RenderHandler> {
+    None
+}
+
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+wrap_render_handler! {
+    struct ContentRenderHandler;
+
+    impl RenderHandler {
+        fn view_rect(&self, _browser: Option<&mut Browser>, rect: Option<&mut Rect>) {
+            let Some(rect) = rect else { return };
+            let bounds = CACHED_BOUNDS
+                .lock()
+                .ok()
+                .map(|b| (*b).clone())
+                .unwrap_or(Rect {
+                    x: 0,
+                    y: 0,
+                    width: 1,
+                    height: 1,
+                });
+            rect.x = 0;
+            rect.y = 0;
+            rect.width = bounds.width.max(1);
+            rect.height = bounds.height.max(1);
+        }
+
+        fn on_paint(
+            &self,
+            _browser: Option<&mut Browser>,
+            type_: PaintElementType,
+            dirty_rects: Option<&[Rect]>,
+            buffer: *const u8,
+            width: ::std::os::raw::c_int,
+            height: ::std::os::raw::c_int,
+        ) {
+            if type_ != PaintElementType::VIEW || buffer.is_null() || width <= 0 || height <= 0 {
+                return;
+            }
+            static PAINTS: AtomicU64 = AtomicU64::new(0);
+            let n = PAINTS.fetch_add(1, Ordering::Relaxed);
+            if n == 0 {
+                eprintln!("[cef] osr-paint first frame {width}x{height}");
+            }
+            let host_xid = OSR_HOST_XID.load(Ordering::Relaxed);
+            let host_xid = if host_xid != 0 {
+                host_xid
+            } else {
+                let xid = shared().lock().ok().and_then(|s| s.host_xid).unwrap_or(0);
+                if xid != 0 {
+                    OSR_HOST_XID.store(xid, Ordering::Relaxed);
+                }
+                xid
+            };
+            if host_xid == 0 {
+                return;
+            }
+            paint_host_window(
+                host_xid,
+                buffer,
+                width as u32,
+                height as u32,
+                dirty_rects,
+            );
+        }
+    }
+}
+
+/// Cached X11 blit targets so OSR paints avoid per-frame Xlib open / attrs / GC.
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+struct OsrPaintTarget {
+    host_xid: u64,
+    visual: *mut x11_dl::xlib::Visual,
+    depth: u32,
+    gc: x11_dl::xlib::GC,
+}
+
+// SAFETY: CEF paints on the browser UI thread; we only touch this from that path.
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+unsafe impl Send for OsrPaintTarget {}
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+unsafe impl Sync for OsrPaintTarget {}
+
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+static OSR_XLIB: OnceLock<x11_dl::xlib::Xlib> = OnceLock::new();
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+static OSR_TARGET: Mutex<Option<OsrPaintTarget>> = Mutex::new(None);
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+static OSR_PAINT_N: AtomicU64 = AtomicU64::new(0);
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+static OSR_HOST_XID: AtomicU64 = AtomicU64::new(0);
+
+/// Blit a CEF OSR BGRA frame into our plain X11 host window.
+///
+/// Zero-copy: wrap CEF's paint buffer in an `XImage` for the duration of this
+/// callback (valid until `on_paint` returns) and only push dirty rectangles.
+#[cfg(any(target_os = "linux", target_os = "freebsd"))]
+fn paint_host_window(
+    host_xid: u64,
+    buffer: *const u8,
+    width: u32,
+    height: u32,
+    dirty_rects: Option<&[Rect]>,
+) {
+    let display = get_xdisplay();
+    if display.is_null() || width == 0 || height == 0 {
+        return;
+    }
+    let xlib = OSR_XLIB.get_or_init(|| {
+        x11_dl::xlib::Xlib::open().expect("libX11 required for OSR paint")
+    });
+
+    let mut guard = match OSR_TARGET.lock() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+    let needs_init = guard.as_ref().is_none_or(|t| t.host_xid != host_xid);
+    if needs_init {
+        unsafe {
+            if let Some(old) = guard.take() {
+                (xlib.XFreeGC)(display as *mut _, old.gc);
+            }
+            let mut attrs: x11_dl::xlib::XWindowAttributes = std::mem::zeroed();
+            if (xlib.XGetWindowAttributes)(display as *mut _, host_xid, &mut attrs) == 0 {
+                eprintln!("[cef] osr XGetWindowAttributes failed for host=0x{host_xid:x}");
+                return;
+            }
+            let visual = attrs.visual;
+            let depth = attrs.depth as u32;
+            if visual.is_null() || depth == 0 {
+                eprintln!("[cef] osr host visual/depth invalid");
+                return;
+            }
+            let gc = (xlib.XCreateGC)(display as *mut _, host_xid, 0, std::ptr::null_mut());
+            if gc.is_null() {
+                eprintln!("[cef] osr XCreateGC failed");
+                return;
+            }
+            *guard = Some(OsrPaintTarget {
+                host_xid,
+                visual,
+                depth,
+                gc,
+            });
+        }
+    }
+    let Some(target) = guard.as_ref() else {
+        return;
+    };
+
+    unsafe {
+        let mut image: x11_dl::xlib::XImage = std::mem::zeroed();
+        image.width = width as i32;
+        image.height = height as i32;
+        image.xoffset = 0;
+        image.format = x11_dl::xlib::ZPixmap;
+        // CEF buffer is valid for this callback only — never XDestroyImage.
+        image.data = buffer as *mut i8;
+        image.byte_order = x11_dl::xlib::LSBFirst;
+        image.bitmap_unit = 32;
+        image.bitmap_bit_order = x11_dl::xlib::LSBFirst;
+        image.bitmap_pad = 32;
+        image.depth = target.depth as i32;
+        image.bytes_per_line = (width * 4) as i32;
+        image.bits_per_pixel = 32;
+        image.red_mask = (*target.visual).red_mask;
+        image.green_mask = (*target.visual).green_mask;
+        image.blue_mask = (*target.visual).blue_mask;
+        if (xlib.XInitImage)(&mut image) == 0 {
+            return;
+        }
+
+        let full = Rect {
+            x: 0,
+            y: 0,
+            width: width as i32,
+            height: height as i32,
+        };
+        let rects: &[Rect] = match dirty_rects {
+            Some(rects) if !rects.is_empty() => rects,
+            _ => std::slice::from_ref(&full),
+        };
+
+        for rect in rects {
+            let x = rect.x.max(0);
+            let y = rect.y.max(0);
+            if x >= width as i32 || y >= height as i32 {
+                continue;
+            }
+            let w = (rect.width.min(width as i32 - x)).max(0) as u32;
+            let h = (rect.height.min(height as i32 - y)).max(0) as u32;
+            if w == 0 || h == 0 {
+                continue;
+            }
+            let _ = (xlib.XPutImage)(
+                display as *mut _,
+                host_xid,
+                target.gc,
+                &mut image,
+                x,
+                y,
+                x,
+                y,
+                w,
+                h,
+            );
+        }
+
+        // Flush every few frames — full flush each paint is expensive under Xwayland.
+        let n = OSR_PAINT_N.fetch_add(1, Ordering::Relaxed);
+        if n % 4 == 0 {
+            (xlib.XFlush)(display as *mut _);
         }
     }
 }
@@ -931,6 +1764,15 @@ wrap_life_span_handler! {
                 resize_child(&browser, &bounds); // positions + shows the child
             } else {
                 set_child_visible(&browser, false);
+            }
+            #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+            {
+                // OSR needs an explicit resize/invalidate after create or the
+                // first frames may never be requested.
+                if let Some(host) = browser.host() {
+                    host.was_resized();
+                    host.invalidate(PaintElementType::VIEW);
+                }
             }
             if let Some(url) = pending_nav
                 && let Some(frame) = browser.main_frame()
@@ -1026,10 +1868,12 @@ wrap_load_handler! {
                     .as_deref()
                     .map(|frame| CefString::from(&frame.url()).to_string())
                     .is_some_and(|url| url.starts_with("miko://shell/"));
+            let is_main = frame.as_deref().is_some_and(|f| f.is_main() != 0);
+            let browser_id = browser.as_deref().map(|b| b.identifier()).unwrap_or(-1);
             eprintln!(
                 "[cef] load-end id={} main={} status={} url={}",
-                browser.map(|b| b.identifier()).unwrap_or(-1),
-                frame.as_deref().map(|f| f.is_main()).unwrap_or(0),
+                browser_id,
+                i32::from(is_main),
                 http_status_code,
                 frame
                     .as_deref()
@@ -1038,6 +1882,20 @@ wrap_load_handler! {
             );
             if should_push_statistics {
                 push_adblock_statistics(true);
+            }
+            // After navigation, re-assert CEF focus if the page still owns input
+            // (Linux OSR otherwise loses keystrokes until the next click).
+            if is_main
+                && shared()
+                    .lock()
+                    .ok()
+                    .is_some_and(|s| s.content_input_active)
+                && let Some(browser) = browser.as_ref()
+                && let Some(host) = browser.host()
+            {
+                host.set_focus(1);
+                #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+                retain_chrome_os_focus();
             }
         }
 
@@ -1390,7 +2248,7 @@ mod youtube_response_filter_tests {
             request_id: 9,
         };
         let mut state = YoutubeFilterState::new(
-            YoutubeResponseKind::PlayerJson,
+            YoutubeResponseKind::ApiJson,
             service.clone(),
             Some(context),
             AdBlockResourceType::XmlHttpRequest,
