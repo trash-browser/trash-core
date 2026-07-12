@@ -133,7 +133,7 @@ pub fn model() -> MenuModel {
             MenuItem::Submenu {
                 label: l[2].into(),
                 icon: None,
-                items: vec![action("history", l[2], Some("Ctrl+H"), false)],
+                items: vec![action("history", l[2], Some("Ctrl+H"), true)],
             },
             action("downloads", l[3], Some("Ctrl+J"), true),
             MenuItem::Submenu {

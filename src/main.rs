@@ -5,6 +5,7 @@ mod browser_menu;
 mod cef_host;
 mod content;
 mod context_menu;
+mod history;
 mod omnibox;
 mod popup;
 mod shell_ipc;
@@ -816,6 +817,7 @@ impl Root {
                 cef_host::focus_content();
             }
             Shortcut::Downloads => self.navigate("miko://#/download-manager", cx),
+            Shortcut::History => self.navigate("miko://#/history", cx),
             Shortcut::Settings => self.navigate("miko://#/settings", cx),
             Shortcut::Print => {
                 cef_host::print_page();
@@ -880,6 +882,7 @@ impl Root {
         use browser_menu::BrowserMenuCommand;
         match command {
             BrowserMenuCommand::NewTab => self.new_tab(cx),
+            BrowserMenuCommand::History => self.navigate("miko://#/history", cx),
             BrowserMenuCommand::Downloads => self.navigate("miko://#/download-manager", cx),
             BrowserMenuCommand::Settings => self.navigate("miko://#/settings", cx),
             BrowserMenuCommand::ZoomOut => self.zoom_out(cx),

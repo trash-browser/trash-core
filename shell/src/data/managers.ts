@@ -17,67 +17,6 @@ export const NTP_SHORTCUTS: Shortcut[] = [
   { id: "news", labelKey: "ntp.shortcuts.news", url: "https://news.google.com", letter: "N", tint: "#322c24" },
 ];
 
-export type DownloadItem = {
-  id: string;
-  name: string;
-  source: string;
-  size: string;
-  status: "complete" | "progress" | "paused" | "failed";
-  progress?: number;
-  path: string;
-  timeKey: string;
-};
-
-export const MOCK_DOWNLOADS: DownloadItem[] = [
-  {
-    id: "1",
-    name: "TrashBrowser-Setup-0.1.0.exe",
-    source: "cdn.trashbrowser.app",
-    size: "86.4 MB",
-    status: "complete",
-    path: "C:\\Users\\Downloads",
-    timeKey: "downloadsMgr.time.today",
-  },
-  {
-    id: "2",
-    name: "design-system.fig",
-    source: "www.figma.com",
-    size: "24.1 MB",
-    status: "progress",
-    progress: 62,
-    path: "C:\\Users\\Downloads",
-    timeKey: "downloadsMgr.time.now",
-  },
-  {
-    id: "3",
-    name: "report-q2.pdf",
-    source: "drive.google.com",
-    size: "3.2 MB",
-    status: "paused",
-    progress: 41,
-    path: "C:\\Users\\Downloads",
-    timeKey: "downloadsMgr.time.yesterday",
-  },
-  {
-    id: "4",
-    name: "sample-pack.zip",
-    source: "files.example.com",
-    size: "512 MB",
-    status: "failed",
-    path: "C:\\Users\\Downloads",
-    timeKey: "downloadsMgr.time.week",
-  },
-  {
-    id: "5",
-    name: "wallpaper-4k.jpg",
-    source: "unsplash.com",
-    size: "8.7 MB",
-    status: "complete",
-    path: "C:\\Users\\Downloads",
-    timeKey: "downloadsMgr.time.week",
-  },
-];
-
 export type FilterList = {
   id: string;
   nameKey: string;

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, Navigate, useParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { IconArrowLeft } from "@tabler/icons-react";
@@ -7,11 +7,34 @@ import { ShellIcon } from "../components/ShellIcon";
 import { Toggle } from "../components/Toggle";
 import { isNavId } from "../data/settings";
 import { getSubpage, isSubId } from "../data/subpages";
+import { getSettings, setSetting } from "../native/ipc";
 
 export function SettingsSubpage() {
   const { page, sub } = useParams();
   const { t } = useTranslation();
   const [toggles, setToggles] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    if (!isNavId(page) || !isSubId(page, sub)) return;
+    let cancelled = false;
+    void getSettings().then((values) => {
+      if (cancelled) return;
+      const def = getSubpage(page, sub!);
+      if (!def) return;
+      const loaded: Record<string, boolean> = {};
+      for (const option of def.options) {
+        const key =
+          option.id === "toggle"
+            ? `settings.${page}.${sub}`
+            : `settings.${page}.${sub}.${option.id}`;
+        if (typeof values[key] === "boolean") loaded[option.id] = values[key];
+      }
+      setToggles(loaded);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [page, sub]);
 
   if (!isNavId(page) || !isSubId(page, sub)) {
     return (
@@ -94,9 +117,21 @@ export function SettingsSubpage() {
                       <Toggle
                         on={toggleOn}
                         label={optTitle}
-                        onChange={(next) =>
-                          setToggles((prev) => ({ ...prev, [option.id]: next }))
-                        }
+                        onChange={(next) => {
+                          const key =
+                            option.id === "toggle"
+                              ? `settings.${page}.${sub}`
+                              : `settings.${page}.${sub}.${option.id}`;
+                          setToggles((prev) => ({ ...prev, [option.id]: next }));
+                          void setSetting(key, next).then((saved) => {
+                            if (!saved) {
+                              setToggles((prev) => ({
+                                ...prev,
+                                [option.id]: !next,
+                              }));
+                            }
+                          });
+                        }}
                       />
                     ) : (
                       <ShellIcon

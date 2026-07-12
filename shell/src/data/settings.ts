@@ -278,7 +278,6 @@ export const PAGES: Record<NavId, SettingSection[]> = {
         {
           id: "location",
           titleKey: "pages.downloads.location.title",
-          descriptionKey: "pages.downloads.location.description",
           control: { kind: "link", valueKey: "pages.downloads.location.action" },
         },
         {

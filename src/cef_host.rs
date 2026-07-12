@@ -77,6 +77,9 @@ struct Shared {
     tx: Sender<CefEvent>,
     /// Created content browsers, keyed by GPUI tab id.
     browsers: HashMap<u64, Browser>,
+    /// Native popup browsers (currently video PIP), keyed by CEF identifier.
+    /// These are owned by CEF rather than embedded under the GPUI window.
+    popups: HashMap<i32, Browser>,
     /// CEF browser identifier -> owning tab id (for routing callbacks).
     identifier_to_tab: HashMap<i32, u64>,
     /// The visible tab. Its browser fills the content area; others are hidden.
@@ -131,6 +134,73 @@ struct AdBlockRuntime {
 
 static ADBLOCK: OnceLock<Arc<AdBlockRuntime>> = OnceLock::new();
 
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DownloadRecord {
+    id: u32,
+    name: String,
+    url: String,
+    path: String,
+    total_bytes: i64,
+    received_bytes: i64,
+    current_speed: i64,
+    percent_complete: i32,
+    status: String,
+    started_at: i64,
+}
+
+struct DownloadRuntime {
+    records: HashMap<u32, DownloadRecord>,
+    callbacks: HashMap<u32, DownloadItemCallback>,
+}
+
+static DOWNLOADS: OnceLock<Mutex<DownloadRuntime>> = OnceLock::new();
+
+fn downloads() -> &'static Mutex<DownloadRuntime> {
+    DOWNLOADS.get_or_init(|| {
+        Mutex::new(DownloadRuntime {
+            records: HashMap::new(),
+            callbacks: HashMap::new(),
+        })
+    })
+}
+
+pub fn download_records_json() -> Result<serde_json::Value, String> {
+    let state = downloads().lock().map_err(|_| "downloads lock poisoned")?;
+    let mut records: Vec<_> = state.records.values().cloned().collect();
+    records.sort_by_key(|record| std::cmp::Reverse(record.started_at));
+    serde_json::to_value(records).map_err(|error| error.to_string())
+}
+
+pub fn download_action(id: u32, action: &str) -> Result<(), String> {
+    let mut state = downloads().lock().map_err(|_| "downloads lock poisoned")?;
+    match action {
+        "pause" => state.callbacks.get(&id).ok_or("download is not active")?.pause(),
+        "resume" => state.callbacks.get(&id).ok_or("download is not active")?.resume(),
+        "cancel" => state.callbacks.get(&id).ok_or("download is not active")?.cancel(),
+        "remove" => {
+            state.records.remove(&id).ok_or("download not found")?;
+            state.callbacks.remove(&id);
+        }
+        _ => return Err("unknown download action".to_string()),
+    }
+    Ok(())
+}
+
+pub fn clear_completed_downloads() -> Result<usize, String> {
+    let mut state = downloads().lock().map_err(|_| "downloads lock poisoned")?;
+    let ids: Vec<_> = state
+        .records
+        .iter()
+        .filter_map(|(id, record)| (record.status == "complete").then_some(*id))
+        .collect();
+    for id in &ids {
+        state.records.remove(id);
+        state.callbacks.remove(id);
+    }
+    Ok(ids.len())
+}
+
 fn shared() -> Arc<Mutex<Shared>> {
     SHARED.get().expect("CEF not initialized").clone()
 }
@@ -165,6 +235,7 @@ pub fn init(args: &Args) -> Option<Receiver<CefEvent>> {
 
     let cache_dir = cache_path();
     let _ = std::fs::create_dir_all(&cache_dir);
+    eprintln!("[cef] user-data-dir={}", cache_dir.display());
 
     let (tx, rx) = mpsc::channel();
     let (statistics_sink, statistics_receiver) = statistics_channel(4096);
@@ -206,6 +277,7 @@ pub fn init(args: &Args) -> Option<Receiver<CefEvent>> {
     let _ = SHARED.set(Arc::new(Mutex::new(Shared {
         tx,
         browsers: HashMap::new(),
+        popups: HashMap::new(),
         identifier_to_tab: HashMap::new(),
         active_tab: None,
         to_create: VecDeque::new(),
@@ -232,6 +304,8 @@ pub fn init(args: &Args) -> Option<Receiver<CefEvent>> {
         #[cfg(any(target_os = "linux", target_os = "freebsd"))]
         windowless_rendering_enabled: 1,
         root_cache_path: CefString::from(cache_dir.to_string_lossy().as_ref()),
+        cache_path: CefString::from(cache_dir.to_string_lossy().as_ref()),
+        persist_session_cookies: 1,
         ..Default::default()
     };
 
@@ -264,7 +338,11 @@ pub fn shutdown_cef() {
     let browsers: Vec<Browser> = shared()
         .lock()
         .ok()
-        .map(|mut s| s.browsers.drain().map(|(_, b)| b).collect())
+        .map(|mut s| {
+            let mut browsers: Vec<_> = s.browsers.drain().map(|(_, browser)| browser).collect();
+            browsers.extend(s.popups.drain().map(|(_, browser)| browser));
+            browsers
+        })
         .unwrap_or_default();
     for browser in &browsers {
         if let Some(host) = browser.host() {
@@ -287,6 +365,405 @@ pub fn shutdown_cef() {
         recorder.shutdown();
     }
     shutdown();
+}
+
+/// Open the native "choose download folder" picker.
+///
+/// The picker result is delivered asynchronously to the shell via the
+/// `trash-download-preferences` DOM event (see `emit_download_preferences_event`)
+/// — the caller (the IPC dispatcher) returns immediately and never blocks waiting
+/// for the user. Returns `true` when the request was accepted/started.
+///
+/// On Windows the picker is `IFileOpenDialog` run on a dedicated STA thread with
+/// its own COM apartment (see `windows_folder_picker`). Previously this called
+/// `BrowserHost::run_file_dialog`, which crashed the whole process: the content
+/// browser uses `RuntimeStyle::ALLOY`, whose `RunFileDialog` for `OPEN_FOLDER`
+/// is not implemented and fails-fast on the CEF UI thread — the abort happened
+/// after `[ipc] method=downloads.chooseLocation` with no further output.
+pub fn choose_download_directory() -> bool {
+    #[cfg(target_os = "windows")]
+    {
+        windows_folder_picker::choose_download_directory()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        if currently_on(ThreadId::UI) == 0 {
+            let mut task = ChooseDownloadDirectoryTask::new();
+            return post_task(ThreadId::UI, Some(&mut task)) != 0;
+        }
+        choose_download_directory_on_ui()
+    }
+}
+
+/// Dispatch a `trash-download-preferences` event into the active shell frame so
+/// the settings UI can react to a folder-picker result.
+///
+/// MUST be called on the CEF UI thread (it touches the browser/frame). Uses only
+/// owned data; safely no-ops when the shell frame is gone (browser/tab closed) or
+/// a non-shell page is active, so a late completion can never crash.
+///
+/// `location` is `Some` only on a real selection; `cancelled` marks user
+/// cancellation; `error` carries a native-dialog failure message.
+fn emit_download_preferences_event(location: Option<&str>, cancelled: bool, error: Option<&str>) {
+    let browser = shared()
+        .lock()
+        .ok()
+        .and_then(|state| state.active_browser());
+    let Some(frame) = browser.as_ref().and_then(Browser::main_frame) else {
+        eprintln!("[downloads-dialog] no active shell frame; UI update skipped");
+        return;
+    };
+    let frame_url = CefString::from(&frame.url()).to_string();
+    if !frame_url.starts_with("miko://shell/") {
+        eprintln!("[downloads-dialog] active frame is not the shell; UI update skipped");
+        return;
+    }
+    let detail = crate::shell_ipc::download_preferences_event_detail(location, cancelled, error);
+    let Ok(detail_json) = serde_json::to_string(&detail) else {
+        eprintln!("[downloads-dialog] failed to encode download-preferences detail");
+        return;
+    };
+    let script = format!(
+        "window.dispatchEvent(new CustomEvent('trash-download-preferences', {{detail:{detail_json}}}));"
+    );
+    frame.execute_java_script(
+        Some(&CefString::from(script.as_str())),
+        Some(&CefString::from("miko://shell/download-preferences.js")),
+        1,
+    );
+}
+
+#[cfg(not(target_os = "windows"))]
+fn choose_download_directory_on_ui() -> bool {
+    let browser = shared()
+        .lock()
+        .ok()
+        .and_then(|state| state.active_browser());
+    let Some(host) = browser.as_ref().and_then(Browser::host) else {
+        return false;
+    };
+    let current = crate::shell_ipc::download_directory();
+    let mut callback = DownloadDirectoryCallback::new();
+    host.run_file_dialog(
+        FileDialogMode::OPEN_FOLDER,
+        Some(&CefString::from("Choose download folder")),
+        Some(&CefString::from(current.as_str())),
+        None,
+        Some(&mut callback),
+    );
+    true
+}
+
+#[cfg(not(target_os = "windows"))]
+wrap_task! {
+    struct ChooseDownloadDirectoryTask;
+
+    impl Task {
+        fn execute(&self) {
+            if !choose_download_directory_on_ui() {
+                eprintln!("[downloads] folder dialog: active browser unavailable");
+            }
+        }
+    }
+}
+
+/// Native Windows folder picker for `downloads.chooseLocation`.
+///
+/// Design (matches the async IPC contract):
+/// 1. `choose_download_directory` validates state, captures the top-level GPUI
+///    window HWND + current directory as owned data, and returns immediately.
+/// 2. A short-lived STA thread initializes COM (`COINIT_APARTMENTTHREADED`),
+///    shows `IFileOpenDialog` with `FOS_PICKFOLDERS`, and never blocks the CEF
+///    or GPUI message loops.
+/// 3. The outcome (Selected / Cancelled / Failed) is persisted (on selection)
+///    and posted back to the CEF UI thread, which resolves the request by
+///    emitting the `trash-download-preferences` event.
+#[cfg(target_os = "windows")]
+mod windows_folder_picker {
+    use super::{FolderPickerOutcome, emit_download_preferences_event, shared};
+    use cef::*;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+    /// Guards against overlapping dialogs so a request completes exactly once and
+    /// a second click while the picker is open is ignored (debounce).
+    static PICKER_ACTIVE: AtomicBool = AtomicBool::new(false);
+    static REQUEST_SEQ: AtomicU64 = AtomicU64::new(0);
+
+    /// Try to become the single active picker. Returns `true` on success.
+    fn begin_picker(flag: &AtomicBool) -> bool {
+        !flag.swap(true, Ordering::AcqRel)
+    }
+
+    /// Release the active-picker guard so the next request can proceed.
+    fn finish_picker(flag: &AtomicBool) {
+        flag.store(false, Ordering::Release);
+    }
+
+    pub(super) fn choose_download_directory() -> bool {
+        if !begin_picker(&PICKER_ACTIVE) {
+            eprintln!("[downloads-dialog] request ignored: a folder picker is already open");
+            // A dialog is already open; treat as accepted so the caller does not
+            // report a spurious failure.
+            return true;
+        }
+
+        let request_id = REQUEST_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
+        // Owner = stable top-level GPUI window HWND (never the CEF child HWND).
+        let owner = shared().lock().ok().and_then(|state| state.parent);
+        let current = crate::shell_ipc::download_directory();
+        eprintln!("[downloads-dialog] request received request_id={request_id}");
+        eprintln!(
+            "[downloads-dialog] parent hwnd={}",
+            owner.map(|h| format!("0x{h:x}")).unwrap_or_else(|| "none".into())
+        );
+        eprintln!("[downloads-dialog] enqueue request_id={request_id}");
+
+        let spawned = std::thread::Builder::new()
+            .name("trash-folder-picker".to_string())
+            .spawn(move || {
+                eprintln!(
+                    "[downloads-dialog] STA thread started request_id={request_id} thread={:?}",
+                    std::thread::current().id()
+                );
+                let outcome = run_folder_picker(owner, &current, request_id);
+                // Release the guard before dispatching so a follow-up request can
+                // start as soon as this dialog is fully done.
+                finish_picker(&PICKER_ACTIVE);
+                dispatch_completion(request_id, outcome);
+            });
+
+        if let Err(error) = spawned {
+            finish_picker(&PICKER_ACTIVE);
+            eprintln!("[downloads-dialog] failed to spawn STA thread: {error}");
+            return false;
+        }
+        true
+    }
+
+    /// Post the picker outcome back to the CEF UI thread, which owns the browser
+    /// and resolves the original request.
+    fn dispatch_completion(request_id: u64, outcome: FolderPickerOutcome) {
+        eprintln!("[downloads-dialog] dispatch completion request_id={request_id}");
+        let mut task = FolderPickerCompletionTask::new(request_id, outcome);
+        if post_task(ThreadId::UI, Some(&mut task)) == 0 {
+            eprintln!(
+                "[downloads-dialog] failed to post completion to UI thread request_id={request_id}"
+            );
+        }
+    }
+
+    /// Show the folder picker on the current STA thread and return the outcome.
+    /// Persists the selected directory (via the settings store) before returning
+    /// so the choice survives even if the browser closes before the UI update.
+    fn run_folder_picker(
+        owner: Option<u64>,
+        current: &str,
+        request_id: u64,
+    ) -> FolderPickerOutcome {
+        use windows::Win32::Foundation::{
+            ERROR_CANCELLED, HWND, RPC_E_CHANGED_MODE, S_FALSE, S_OK,
+        };
+        use windows::Win32::System::Com::{
+            CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
+            CoTaskMemFree, CoUninitialize,
+        };
+        use windows::Win32::UI::Shell::{
+            FILEOPENDIALOGOPTIONS, FOS_FORCEFILESYSTEM, FOS_PICKFOLDERS, FileOpenDialog,
+            IFileOpenDialog, IShellItem, SHCreateItemFromParsingName, SIGDN_FILESYSPATH,
+        };
+        use windows::Win32::UI::WindowsAndMessaging::IsWindow;
+        use windows::core::{HRESULT, PCWSTR};
+
+        // A NUL-terminated UTF-16 buffer for Win32 wide-string arguments.
+        fn to_wide(value: &str) -> Vec<u16> {
+            value.encode_utf16().chain(std::iter::once(0)).collect()
+        }
+
+        unsafe {
+            let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+            eprintln!(
+                "[downloads-dialog] COM init result=0x{:08X} request_id={request_id}",
+                hr.0 as u32
+            );
+            // Only balance CoUninitialize when *this* call initialized COM.
+            // RPC_E_CHANGED_MODE means COM was already initialized in another mode
+            // on this thread; it did not add a reference, so we must not release.
+            let owns_com = hr == S_OK || hr == S_FALSE;
+            if hr.is_err() && hr != RPC_E_CHANGED_MODE {
+                return FolderPickerOutcome::Failed(format!(
+                    "COM init failed (0x{:08X})",
+                    hr.0 as u32
+                ));
+            }
+
+            let outcome = (|| -> Result<FolderPickerOutcome, windows::core::Error> {
+                let dialog: IFileOpenDialog =
+                    CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)?;
+
+                let base = dialog.GetOptions().unwrap_or(FILEOPENDIALOGOPTIONS(0));
+                dialog.SetOptions(FILEOPENDIALOGOPTIONS(
+                    base.0 | FOS_PICKFOLDERS.0 | FOS_FORCEFILESYSTEM.0,
+                ))?;
+
+                let title = to_wide("Choose download folder");
+                let _ = dialog.SetTitle(PCWSTR(title.as_ptr()));
+
+                // Start at the current download directory when it resolves.
+                if !current.trim().is_empty() {
+                    let wide = to_wide(current);
+                    if let Ok(item) = SHCreateItemFromParsingName::<_, _, IShellItem>(
+                        PCWSTR(wide.as_ptr()),
+                        None,
+                    ) {
+                        let _ = dialog.SetFolder(&item);
+                    }
+                }
+
+                // Own the dialog with the top-level window only when it is still a
+                // live HWND; otherwise open unowned rather than risk a stale handle.
+                let owner_hwnd = owner
+                    .map(|handle| HWND(handle as *mut core::ffi::c_void))
+                    .filter(|hwnd| IsWindow(Some(*hwnd)).as_bool());
+                eprintln!(
+                    "[downloads-dialog] before show request_id={request_id} owner_valid={}",
+                    owner_hwnd.is_some()
+                );
+
+                match dialog.Show(owner_hwnd) {
+                    Ok(()) => {
+                        let item = dialog.GetResult()?;
+                        let raw = item.GetDisplayName(SIGDN_FILESYSPATH)?;
+                        let path = raw.to_string().unwrap_or_default();
+                        CoTaskMemFree(Some(raw.0 as *const core::ffi::c_void));
+                        if path.is_empty() {
+                            Ok(FolderPickerOutcome::Failed(
+                                "shell returned an empty path".to_string(),
+                            ))
+                        } else {
+                            eprintln!("[downloads-dialog] selected path={path}");
+                            Ok(FolderPickerOutcome::Selected(path))
+                        }
+                    }
+                    Err(error) if error.code() == HRESULT::from_win32(ERROR_CANCELLED.0) => {
+                        eprintln!("[downloads-dialog] cancelled request_id={request_id}");
+                        Ok(FolderPickerOutcome::Cancelled)
+                    }
+                    Err(error) => Err(error),
+                }
+            })();
+
+            if owns_com {
+                CoUninitialize();
+            }
+
+            match outcome {
+                Ok(FolderPickerOutcome::Selected(path)) => persist_selection(path),
+                Ok(other) => other,
+                Err(error) => {
+                    let message = format!(
+                        "dialog error 0x{:08X}: {}",
+                        error.code().0 as u32,
+                        error.message()
+                    );
+                    eprintln!("[downloads-dialog] dialog error={message} request_id={request_id}");
+                    FolderPickerOutcome::Failed(message)
+                }
+            }
+        }
+    }
+
+    /// Validate + persist a chosen directory through the existing settings store.
+    fn persist_selection(path: String) -> FolderPickerOutcome {
+        if !std::path::Path::new(&path).is_dir() {
+            return FolderPickerOutcome::Failed(format!("not a directory: {path}"));
+        }
+        match crate::shell_ipc::set_download_directory(&path) {
+            Ok(()) => FolderPickerOutcome::Selected(path),
+            Err(error) => FolderPickerOutcome::Failed(format!("could not save location: {error}")),
+        }
+    }
+
+    wrap_task! {
+        struct FolderPickerCompletionTask {
+            request_id: u64,
+            outcome: FolderPickerOutcome,
+        }
+
+        impl Task {
+            fn execute(&self) {
+                match &self.outcome {
+                    FolderPickerOutcome::Selected(path) => {
+                        eprintln!(
+                            "[downloads-dialog] IPC resolved request_id={} (selected)",
+                            self.request_id
+                        );
+                        emit_download_preferences_event(Some(path), false, None);
+                    }
+                    FolderPickerOutcome::Cancelled => {
+                        eprintln!(
+                            "[downloads-dialog] IPC resolved request_id={} (cancelled)",
+                            self.request_id
+                        );
+                        emit_download_preferences_event(None, true, None);
+                    }
+                    FolderPickerOutcome::Failed(message) => {
+                        eprintln!(
+                            "[downloads-dialog] IPC rejected request_id={} error={message}",
+                            self.request_id
+                        );
+                        emit_download_preferences_event(None, false, Some(message));
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn picker_guard_admits_one_and_resets() {
+            let flag = AtomicBool::new(false);
+            // First request acquires the guard.
+            assert!(begin_picker(&flag));
+            // A concurrent request is rejected (debounce / exactly-once).
+            assert!(!begin_picker(&flag));
+            // After completion the guard is released for the next request.
+            finish_picker(&flag);
+            assert!(begin_picker(&flag));
+            finish_picker(&flag);
+        }
+
+        #[test]
+        fn only_selection_persists() {
+            assert!(FolderPickerOutcome::Selected("C:/x".into()).persists());
+            assert!(!FolderPickerOutcome::Cancelled.persists());
+            assert!(!FolderPickerOutcome::Failed("boom".into()).persists());
+        }
+    }
+}
+
+/// Result of a native folder-picker request. Owned data only, so it can cross
+/// the STA worker thread back to the CEF UI thread safely.
+#[cfg(target_os = "windows")]
+#[derive(Debug, Clone)]
+enum FolderPickerOutcome {
+    /// User picked an existing directory (already persisted).
+    Selected(String),
+    /// User dismissed the dialog; preferences are left unchanged.
+    Cancelled,
+    /// The native dialog failed; surfaced to the shell as a structured error.
+    Failed(String),
+}
+
+#[cfg(target_os = "windows")]
+impl FolderPickerOutcome {
+    /// True only for a selection — i.e. the only outcome that updates settings.
+    #[allow(dead_code)] // Exercised by unit tests; documents the persist rule.
+    fn persists(&self) -> bool {
+        matches!(self, FolderPickerOutcome::Selected(_))
+    }
 }
 
 /// Drive CEF from the GPUI main thread.
@@ -407,6 +884,105 @@ pub fn replace_adblock_filter_lists(lists: Vec<String>) {
     adblock_runtime()
         .service
         .replace_engine(trash_adblock::EngineSnapshot::new(engine));
+}
+
+/// Add a lightweight PIP control to videos without modifying the page layout.
+/// A single fixed button follows the video under the pointer, which also works
+/// for videos added later by SPA navigation or lazy loading.
+fn inject_picture_in_picture_button(frame: &Frame) {
+    const SCRIPT: &str = r#"
+(() => {
+  if (window.__trashPipButtonInstalled ||
+      typeof HTMLVideoElement.prototype.requestPictureInPicture !== 'function') return;
+  window.__trashPipButtonInstalled = true;
+
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.id = '__trash-pip-button';
+  button.title = 'Picture in Picture';
+  button.setAttribute('aria-label', 'Open video in Picture in Picture');
+  button.innerHTML = '<span></span>';
+  Object.assign(button.style, {
+    all: 'initial', position: 'fixed', zIndex: '2147483647', display: 'none',
+    boxSizing: 'border-box', width: '36px', height: '30px', cursor: 'pointer',
+    border: '1px solid rgba(255,255,255,.3)', borderRadius: '7px',
+    background: 'rgba(20,20,20,.88)', boxShadow: '0 2px 8px rgba(0,0,0,.35)'
+  });
+  Object.assign(button.firstElementChild.style, {
+    position: 'absolute', left: '8px', top: '7px', width: '17px', height: '13px',
+    boxSizing: 'border-box', border: '2px solid white', borderRadius: '2px'
+  });
+  const mini = document.createElement('i');
+  Object.assign(mini.style, {
+    position: 'absolute', right: '-3px', bottom: '-3px', width: '8px', height: '6px',
+    background: 'white', border: '1px solid rgba(20,20,20,.88)', borderRadius: '1px'
+  });
+  button.firstElementChild.appendChild(mini);
+  (document.documentElement || document).appendChild(button);
+
+  let video = null;
+  const videos = () => Array.from(document.querySelectorAll('video'));
+  const visibleRect = candidate => {
+    if (candidate.disablePictureInPicture) return null;
+    const rect = candidate.getBoundingClientRect();
+    if (rect.width < 80 || rect.height < 45 || rect.bottom <= 0 || rect.right <= 0 ||
+        rect.top >= innerHeight || rect.left >= innerWidth) return null;
+    return rect;
+  };
+  const place = candidate => {
+    if (!(candidate instanceof HTMLVideoElement)) return false;
+    const rect = visibleRect(candidate);
+    if (!rect) return false;
+    video = candidate;
+    button.style.left = `${Math.min(innerWidth - 40, Math.max(4, rect.right - 44))}px`;
+    button.style.top = `${Math.max(4, rect.top + 8)}px`;
+    button.style.display = 'block';
+    return true;
+  };
+
+  const chooseVideo = (x, y) => {
+    const candidates = videos().map(candidate => ({ candidate, rect: visibleRect(candidate) }))
+      .filter(item => item.rect);
+    const underPointer = candidates.filter(({ rect }) =>
+      x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom);
+    const pool = underPointer.length ? underPointer : candidates;
+    pool.sort((a, b) => (b.rect.width * b.rect.height) - (a.rect.width * a.rect.height));
+    return pool[0]?.candidate || null;
+  };
+
+  const refresh = () => {
+    if (video && place(video)) return;
+    if (!place(chooseVideo(-1, -1))) button.style.display = 'none';
+  };
+
+  document.addEventListener('pointermove', event => {
+    if (event.composedPath().includes(button)) return;
+    place(chooseVideo(event.clientX, event.clientY));
+  }, true);
+  document.addEventListener('scroll', refresh, true);
+  window.addEventListener('resize', refresh);
+  new MutationObserver(refresh).observe(document.documentElement, { childList: true, subtree: true });
+  refresh();
+  console.info(`[Trash Browser PIP] injected; videos=${videos().length}`);
+
+  button.addEventListener('click', async event => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!video) return;
+    try {
+      if (document.pictureInPictureElement === video) await document.exitPictureInPicture();
+      else await video.requestPictureInPicture();
+    } catch (error) {
+      console.warn('[Trash Browser] Picture in Picture failed', error);
+    }
+  });
+})();
+"#;
+    frame.execute_java_script(
+        Some(&CefString::from(SCRIPT)),
+        Some(&CefString::from("miko://browser/picture-in-picture.js")),
+        1,
+    );
 }
 
 /// Attach the content browsers under `parent_xid` and keep the active browser
@@ -1515,12 +2091,35 @@ fn log_windows_browser(event: &str, browser: &Browser) {
     );
 }
 
-fn cache_path() -> std::path::PathBuf {
-    let base = std::env::var_os("XDG_CACHE_HOME")
-        .map(std::path::PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache")))
-        .unwrap_or_else(|| std::env::temp_dir());
-    base.join("trashbrowser-gpui")
+pub(crate) fn cache_path() -> std::path::PathBuf {
+    #[cfg(target_os = "windows")]
+    {
+        // Keep the complete browser profile in the user's roaming application
+        // data. Falling back to TEMP makes cookies, history and preferences
+        // disappear after cleanup and can create a new profile every launch.
+        return std::env::var_os("APPDATA")
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("USERPROFILE")
+                    .map(std::path::PathBuf::from)
+                    .map(|home| home.join("AppData").join("Roaming"))
+            })
+            .unwrap_or_else(|| {
+                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("C:\\"))
+            })
+            .join("Trash Browser");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let base = std::env::var_os("XDG_CACHE_HOME")
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache"))
+            })
+            .unwrap_or_else(|| std::env::temp_dir());
+        base.join("trashbrowser-gpui")
+    }
 }
 
 const SHELL_HTML: &[u8] = include_bytes!(concat!(
@@ -1604,6 +2203,16 @@ wrap_resource_handler! {
             response.set_status(200);
             response.set_status_text(Some(&CefString::from("OK")));
             response.set_mime_type(Some(&CefString::from(self.mime_type.as_str())));
+            response.set_header_by_name(
+                Some(&CefString::from("Cache-Control")),
+                Some(&CefString::from("no-store, no-cache, must-revalidate")),
+                1,
+            );
+            response.set_header_by_name(
+                Some(&CefString::from("Pragma")),
+                Some(&CefString::from("no-cache")),
+                1,
+            );
             if let Some(response_length) = response_length {
                 *response_length = self.body.len() as i64;
             }
@@ -1660,7 +2269,8 @@ wrap_app! {
             const OPTIONS: i32 = sys::cef_scheme_options_t::CEF_SCHEME_OPTION_STANDARD as i32
                 | sys::cef_scheme_options_t::CEF_SCHEME_OPTION_LOCAL as i32
                 | sys::cef_scheme_options_t::CEF_SCHEME_OPTION_SECURE as i32
-                | sys::cef_scheme_options_t::CEF_SCHEME_OPTION_CORS_ENABLED as i32;
+                | sys::cef_scheme_options_t::CEF_SCHEME_OPTION_CORS_ENABLED as i32
+                | sys::cef_scheme_options_t::CEF_SCHEME_OPTION_FETCH_ENABLED as i32;
             if let Some(registrar) = registrar {
                 let ok = registrar.add_custom_scheme(Some(&CefString::from("miko")), OPTIONS);
                 assert_eq!(ok, 1, "failed to register miko scheme");
@@ -1745,6 +2355,9 @@ wrap_client! {
         }
         fn keyboard_handler(&self) -> Option<KeyboardHandler> {
             Some(ContentKeyboardHandler::new())
+        }
+        fn download_handler(&self) -> Option<DownloadHandler> {
+            Some(ContentDownloadHandler::new())
         }
         fn render_handler(&self) -> Option<RenderHandler> {
             linux_render_handler()
@@ -1989,6 +2602,17 @@ wrap_life_span_handler! {
     impl LifeSpanHandler {
         fn on_after_created(&self, browser: Option<&mut Browser>) {
             let Some(browser) = browser.cloned() else { return };
+            // Allowed PIP requests create a real popup browser and share this
+            // client. Never consume the FIFO used to correlate app-created
+            // tabs; doing so can register the PIP browser as the wrong tab.
+            if browser.is_popup() != 0 {
+                let identifier = browser.identifier();
+                eprintln!("[pip] popup-created id={identifier}");
+                if let Ok(mut s) = shared().lock() {
+                    s.popups.insert(identifier, browser);
+                }
+                return;
+            }
             // Correlate this browser with the oldest outstanding create request.
             let state = shared().lock().ok().and_then(|mut s| {
                 let pending = s.creating.pop_front()?;
@@ -2050,6 +2674,11 @@ wrap_life_span_handler! {
             // through to on_before_close, keeping the tab bookkeeping correct.
             #[cfg(target_os = "windows")]
             {
+                if _browser.as_deref().is_some_and(|browser| browser.is_popup() != 0) {
+                    // CEF created and owns the top-level PIP window. Default
+                    // close handling targets that window correctly.
+                    return 0;
+                }
                 unsafe extern "system" {
                     fn DestroyWindow(hwnd: isize) -> i32;
                 }
@@ -2075,6 +2704,10 @@ wrap_life_span_handler! {
             let identifier = browser.identifier();
             adblock_runtime().navigation.remove_browser(identifier);
             if let Ok(mut s) = shared().lock() {
+                if s.popups.remove(&identifier).is_some() {
+                    eprintln!("[pip] popup-closed id={identifier}");
+                    return;
+                }
                 if let Some(tab_id) = s.identifier_to_tab.remove(&identifier) {
                     s.browsers.remove(&tab_id);
                     if s.active_tab == Some(tab_id) {
@@ -2092,7 +2725,7 @@ wrap_life_span_handler! {
             _popup_id: i32,
             target_url: Option<&CefString>,
             _target_frame_name: Option<&CefString>,
-            _target_disposition: WindowOpenDisposition,
+            target_disposition: WindowOpenDisposition,
             _user_gesture: i32,
             _popup_features: Option<&PopupFeatures>,
             _window_info: Option<&mut WindowInfo>,
@@ -2101,6 +2734,14 @@ wrap_life_span_handler! {
             _extra_info: Option<&mut Option<DictionaryValue>>,
             _no_javascript_access: Option<&mut i32>,
         ) -> i32 {
+            // Chromium implements video Picture-in-Picture as a special popup.
+            // Let CEF create and own that native, always-on-top window; treating
+            // it like a regular web popup (the old behavior below) cancels PIP.
+            if target_disposition == WindowOpenDisposition::NEW_PICTURE_IN_PICTURE {
+                eprintln!("[pip] popup-request allowed");
+                return 0;
+            }
+
             // Open popups as same-tab navigations.
             if let Some(url) = target_url {
                 let url = url.to_string();
@@ -2167,6 +2808,12 @@ wrap_load_handler! {
                     crate::shell_ipc::inject_bridge(frame);
                 }
                 push_adblock_statistics(true);
+            }
+            if let Some(frame) = frame.as_ref() {
+                let url = CefString::from(&frame.url()).to_string();
+                if !url.starts_with("miko://shell/") {
+                    inject_picture_in_picture_button(frame);
+                }
             }
             // After navigation, re-assert CEF focus if the page still owns input
             // (Linux OSR otherwise loses keystrokes until the next click).
@@ -2910,29 +3557,191 @@ wrap_context_menu_handler! {
     }
 }
 
+/// CEF file-dialog callback for the non-Windows folder picker. Runs on the CEF
+/// UI thread, so it may resolve the request by dispatching the shell event
+/// directly. Windows uses the native STA picker instead (see
+/// `windows_folder_picker`).
+#[cfg(not(target_os = "windows"))]
+wrap_run_file_dialog_callback! {
+    struct DownloadDirectoryCallback;
+
+    impl RunFileDialogCallback {
+        fn on_file_dialog_dismissed(&self, file_paths: Option<&mut CefStringList>) {
+            let selected = file_paths.and_then(|list| {
+                let raw: *mut sys::_cef_string_list_t = (&mut *list).into();
+                if raw.is_null() || unsafe { sys::cef_string_list_size(raw) } == 0 {
+                    return None;
+                }
+                let mut value = unsafe { std::mem::zeroed() };
+                if unsafe { sys::cef_string_list_value(raw, 0, &mut value) } == 0 {
+                    return None;
+                }
+                let path = CefString::from(std::ptr::from_ref(&value)).to_string();
+                (!path.is_empty()).then_some(path)
+            });
+            let Some(path) = selected else {
+                // Empty list = user cancelled; leave preferences unchanged.
+                emit_download_preferences_event(None, true, None);
+                return;
+            };
+            match crate::shell_ipc::set_download_directory(&path) {
+                Ok(()) => emit_download_preferences_event(Some(&path), false, None),
+                Err(error) => emit_download_preferences_event(
+                    None,
+                    false,
+                    Some(&format!("could not save location: {error}")),
+                ),
+            }
+        }
+    }
+}
+
+wrap_download_handler! {
+    struct ContentDownloadHandler;
+
+    impl DownloadHandler {
+        fn can_download(
+            &self,
+            _browser: Option<&mut Browser>,
+            _url: Option<&CefString>,
+            _request_method: Option<&CefString>,
+        ) -> i32 {
+            1
+        }
+
+        fn on_before_download(
+            &self,
+            _browser: Option<&mut Browser>,
+            _download_item: Option<&mut DownloadItem>,
+            suggested_name: Option<&CefString>,
+            callback: Option<&mut BeforeDownloadCallback>,
+        ) -> i32 {
+            let Some(callback) = callback else { return 0 };
+            if crate::shell_ipc::ask_download_location() {
+                callback.cont(None, 1);
+                return 1;
+            }
+            let directory = std::path::PathBuf::from(crate::shell_ipc::download_directory());
+            let _ = std::fs::create_dir_all(&directory);
+            let name = suggested_name
+                .map(CefString::to_string)
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| "download".to_string());
+            let safe_name = std::path::Path::new(&name)
+                .file_name()
+                .unwrap_or_else(|| std::ffi::OsStr::new("download"));
+            let path = directory.join(safe_name);
+            callback.cont(Some(&CefString::from(path.to_string_lossy().as_ref())), 0);
+            1
+        }
+
+        fn on_download_updated(
+            &self,
+            _browser: Option<&mut Browser>,
+            download_item: Option<&mut DownloadItem>,
+            callback: Option<&mut DownloadItemCallback>,
+        ) {
+            let Some(item) = download_item else { return };
+            if item.is_valid() == 0 {
+                return;
+            }
+            let id = item.id();
+            let status = if item.is_complete() != 0 {
+                "complete"
+            } else if item.is_canceled() != 0 {
+                "canceled"
+            } else if item.is_interrupted() != 0 {
+                "failed"
+            } else if item.is_paused() != 0 {
+                "paused"
+            } else {
+                "progress"
+            };
+            let record = DownloadRecord {
+                id,
+                name: CefString::from(&item.suggested_file_name()).to_string(),
+                url: CefString::from(&item.url()).to_string(),
+                path: CefString::from(&item.full_path()).to_string(),
+                total_bytes: item.total_bytes(),
+                received_bytes: item.received_bytes(),
+                current_speed: item.current_speed(),
+                percent_complete: item.percent_complete(),
+                status: status.to_string(),
+                started_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_secs() as i64)
+                    .unwrap_or_default(),
+            };
+            if let Ok(mut state) = downloads().lock() {
+                if let Some(existing) = state.records.get(&id) {
+                    let started_at = existing.started_at;
+                    state.records.insert(id, DownloadRecord { started_at, ..record });
+                } else {
+                    state.records.insert(id, record);
+                }
+                if let Some(callback) = callback {
+                    state.callbacks.insert(id, callback.clone());
+                }
+                if matches!(status, "complete" | "canceled" | "failed") {
+                    state.callbacks.remove(&id);
+                }
+            }
+        }
+    }
+}
+
 wrap_display_handler! {
     struct ContentDisplayHandler;
 
     impl DisplayHandler {
+        fn on_console_message(
+            &self,
+            _browser: Option<&mut Browser>,
+            _level: LogSeverity,
+            message: Option<&CefString>,
+            source: Option<&CefString>,
+            line: i32,
+        ) -> i32 {
+            let source = source.map(CefString::to_string).unwrap_or_default();
+            if source == "miko://browser/picture-in-picture.js" {
+                eprintln!(
+                    "[pip] renderer line={line}: {}",
+                    message.map(CefString::to_string).unwrap_or_default()
+                );
+                return 1;
+            }
+            0
+        }
+
         fn on_address_change(
             &self,
             _browser: Option<&mut Browser>,
             _frame: Option<&mut Frame>,
             url: Option<&CefString>,
         ) {
+            let address = url.map(CefString::to_string).unwrap_or_default();
+            crate::history::record_visit(&address);
             if let Some(tab_id) = tab_of(_browser.as_deref()) {
                 emit(CefEvent::Address {
                     tab_id,
-                    url: url.map(CefString::to_string).unwrap_or_default(),
+                    url: address,
                 });
             }
         }
 
         fn on_title_change(&self, _browser: Option<&mut Browser>, title: Option<&CefString>) {
+            let title = title.map(CefString::to_string).unwrap_or_default();
+            if let Some(url) = _browser
+                .as_deref()
+                .and_then(Browser::main_frame)
+                .map(|frame| CefString::from(&frame.url()).to_string())
+            {
+                crate::history::update_title(&url, &title);
+            }
             if let Some(tab_id) = tab_of(_browser.as_deref()) {
                 emit(CefEvent::Title {
                     tab_id,
-                    title: title.map(CefString::to_string).unwrap_or_default(),
+                    title,
                 });
             }
         }

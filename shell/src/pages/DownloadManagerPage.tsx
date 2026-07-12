@@ -1,13 +1,19 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   IconFolder,
+  IconPlayerPause,
   IconPlayerPlay,
   IconSearch,
   IconTrash,
   IconX,
 } from "@tabler/icons-react";
-import { MOCK_DOWNLOADS, type DownloadItem } from "../data/managers";
+import {
+  clearCompletedDownloads,
+  downloadAction,
+  getDownloads,
+  type NativeDownload as DownloadItem,
+} from "../native/ipc";
 
 type Filter = "all" | "progress" | "complete" | "paused" | "failed";
 
@@ -18,6 +24,7 @@ function StatusBadge({ item }: { item: DownloadItem }) {
     progress: { label: t("downloadsMgr.status.progress"), cls: "text-shell-accent" },
     paused: { label: t("downloadsMgr.status.paused"), cls: "text-shell-muted" },
     failed: { label: t("downloadsMgr.status.failed"), cls: "text-shell-danger" },
+    canceled: { label: t("downloadsMgr.status.failed"), cls: "text-shell-danger" },
   } as const;
   const s = map[item.status];
   return <span className={`text-xs ${s.cls}`}>{s.label}</span>;
@@ -27,7 +34,18 @@ export function DownloadManagerPage() {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
-  const [items, setItems] = useState(MOCK_DOWNLOADS);
+  const [items, setItems] = useState<DownloadItem[]>([]);
+
+  useEffect(() => {
+    let active = true;
+    const refresh = () => void getDownloads().then((next) => active && setItems(next));
+    refresh();
+    const timer = window.setInterval(refresh, 750);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, []);
 
   const filtered = useMemo(() => {
     return items.filter((item) => {
@@ -35,17 +53,30 @@ export function DownloadManagerPage() {
       const q = query.trim().toLowerCase();
       if (!q) return true;
       return (
-        item.name.toLowerCase().includes(q) ||
-        item.source.toLowerCase().includes(q)
+        item.name.toLowerCase().includes(q) || item.url.toLowerCase().includes(q)
       );
     });
   }, [items, filter, query]);
 
-  const remove = (id: string) =>
-    setItems((prev) => prev.filter((item) => item.id !== id));
+  const remove = async (id: number, status: DownloadItem["status"]) => {
+    const action = status === "complete" || status === "failed" || status === "canceled" ? "remove" : "cancel";
+    if (await downloadAction(id, action)) {
+      if (action === "remove") setItems((prev) => prev.filter((item) => item.id !== id));
+    }
+  };
 
-  const clearCompleted = () =>
-    setItems((prev) => prev.filter((item) => item.status !== "complete"));
+  const clearCompleted = async () => {
+    if (await clearCompletedDownloads()) {
+      setItems((prev) => prev.filter((item) => item.status !== "complete"));
+    }
+  };
+
+  const formatBytes = (bytes: number) => {
+    if (bytes <= 0) return "—";
+    const units = ["B", "KB", "MB", "GB"];
+    const index = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+    return `${(bytes / 1024 ** index).toFixed(index ? 1 : 0)} ${units[index]}`;
+  };
 
   const filters: { id: Filter; labelKey: string }[] = [
     { id: "all", labelKey: "downloadsMgr.filters.all" },
@@ -65,7 +96,7 @@ export function DownloadManagerPage() {
           </div>
           <button
             type="button"
-            onClick={clearCompleted}
+            onClick={() => void clearCompleted()}
             className="rounded-xl px-3 py-1.5 text-[12px] text-shell-muted hover:bg-shell-hover hover:text-shell-text"
           >
             {t("downloadsMgr.clearCompleted")}
@@ -119,17 +150,17 @@ export function DownloadManagerPage() {
                     <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-shell-muted">
                       <StatusBadge item={item} />
                       <span>·</span>
-                      <span>{item.size}</span>
+                      <span>{formatBytes(item.totalBytes || item.receivedBytes)}</span>
                       <span>·</span>
-                      <span>{item.source}</span>
+                      <span>{new URL(item.url).hostname}</span>
                       <span>·</span>
-                      <span>{t(item.timeKey)}</span>
+                      <span>{new Date(item.startedAt * 1000).toLocaleString()}</span>
                     </div>
-                    {item.progress != null && item.status !== "complete" ? (
+                    {item.percentComplete >= 0 && item.status !== "complete" ? (
                       <div className="mt-2.5 h-1.5 overflow-hidden rounded-full bg-shell-track/35">
                         <div
                           className="h-full rounded-full bg-shell-accent/85"
-                          style={{ width: `${item.progress}%` }}
+                          style={{ width: `${item.percentComplete}%` }}
                         />
                       </div>
                     ) : null}
@@ -143,24 +174,30 @@ export function DownloadManagerPage() {
                         type="button"
                         className="rounded-xl p-1.5 text-shell-muted hover:bg-shell-hover hover:text-shell-text"
                         aria-label={t("downloadsMgr.actions.resume")}
-                        onClick={() =>
+                        onClick={() => {
                           setItems((prev) =>
                             prev.map((d) =>
                               d.id === item.id
-                                ? { ...d, status: "progress", progress: d.progress ?? 10 }
+                                ? { ...d, status: "progress" }
                                 : d,
                             ),
-                          )
-                        }
+                          );
+                          void downloadAction(item.id, "resume");
+                        }}
                       >
                         <IconPlayerPlay size={15} stroke={1.5} />
+                      </button>
+                    ) : null}
+                    {item.status === "progress" ? (
+                      <button type="button" className="rounded-xl p-1.5 text-shell-muted hover:bg-shell-hover hover:text-shell-text" aria-label="Pause" onClick={() => void downloadAction(item.id, "pause")}>
+                        <IconPlayerPause size={15} stroke={1.5} />
                       </button>
                     ) : null}
                     <button
                       type="button"
                       className="rounded-xl p-1.5 text-shell-muted hover:bg-shell-hover hover:text-shell-danger"
                       aria-label={t("downloadsMgr.actions.remove")}
-                      onClick={() => remove(item.id)}
+                      onClick={() => void remove(item.id, item.status)}
                     >
                       {item.status === "complete" ? (
                         <IconTrash size={15} stroke={1.5} />

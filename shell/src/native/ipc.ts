@@ -19,6 +19,29 @@ export type Versions = {
   chromium: string;
 };
 
+export type SettingValue = boolean | string | number;
+export type SettingsSnapshot = Record<string, SettingValue>;
+export type DownloadPreferences = { location: string; askEveryTime: boolean };
+export type HistoryEntry = {
+  id: number;
+  url: string;
+  title: string;
+  visited_at: number;
+  visit_count: number;
+};
+export type NativeDownload = {
+  id: number;
+  name: string;
+  url: string;
+  path: string;
+  totalBytes: number;
+  receivedBytes: number;
+  currentSpeed: number;
+  percentComplete: number;
+  status: "complete" | "progress" | "paused" | "failed" | "canceled";
+  startedAt: number;
+};
+
 declare global {
   interface Window {
     trashCef?: {
@@ -48,17 +71,13 @@ async function fetchInvoke(
   const id = String(Date.now());
   const body = JSON.stringify({ id, method, params });
   try {
-    const res = await fetch(IPC_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body,
-    });
-    return (await res.json()) as IpcResponse;
-  } catch {
     const res = await fetch(`${IPC_URL}?payload=${encodeURIComponent(body)}`, {
       method: "GET",
+      cache: "no-store",
     });
     return (await res.json()) as IpcResponse;
+  } catch (error) {
+    return { id, ok: false, error: String(error) };
   }
 }
 
@@ -156,6 +175,65 @@ export async function getVersions(): Promise<Versions> {
     cef: "unknown",
     chromium: "unknown",
   };
+}
+
+export async function getSettings(): Promise<SettingsSnapshot> {
+  const response = await invoke<{ values: SettingsSnapshot }>("settings.getAll");
+  return response.ok && response.result ? response.result.values : {};
+}
+
+export async function setSetting(
+  key: string,
+  value: SettingValue,
+): Promise<boolean> {
+  return (await invoke("settings.set", { key, value })).ok;
+}
+
+export async function resetSettings(): Promise<boolean> {
+  return (await invoke("settings.reset")).ok;
+}
+
+export async function getDownloadPreferences(): Promise<DownloadPreferences> {
+  const response = await invoke<DownloadPreferences>("downloads.getPreferences");
+  return response.ok && response.result
+    ? response.result
+    : { location: "", askEveryTime: false };
+}
+
+export async function chooseDownloadLocation(): Promise<boolean> {
+  return (await invoke("downloads.chooseLocation")).ok;
+}
+
+export async function getHistory(query = ""): Promise<HistoryEntry[]> {
+  const response = await invoke<{ entries: HistoryEntry[] }>("history.list", {
+    query,
+    limit: 1000,
+  });
+  return response.ok && response.result ? response.result.entries : [];
+}
+
+export async function removeHistoryEntry(id: number): Promise<boolean> {
+  return (await invoke("history.remove", { id })).ok;
+}
+
+export async function clearHistory(): Promise<boolean> {
+  return (await invoke("history.clear")).ok;
+}
+
+export async function getDownloads(): Promise<NativeDownload[]> {
+  const response = await invoke<{ items: NativeDownload[] }>("downloads.list");
+  return response.ok && response.result ? response.result.items : [];
+}
+
+export async function downloadAction(
+  id: number,
+  action: "pause" | "resume" | "cancel" | "remove",
+): Promise<boolean> {
+  return (await invoke("downloads.action", { id, action })).ok;
+}
+
+export async function clearCompletedDownloads(): Promise<boolean> {
+  return (await invoke("downloads.clearCompleted")).ok;
 }
 
 /** Wait until the host injects `trashCef` (or timeout in Vite). */

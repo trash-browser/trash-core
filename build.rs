@@ -74,6 +74,7 @@ END
 fn main() {
     const ASSET_ROOT: &str = "assets/tabler_icons";
     println!("cargo:rerun-if-changed={ASSET_ROOT}");
+    println!("cargo:rerun-if-changed=shell/dist/index.html");
 
     let manifest_dir = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
 

@@ -18,6 +18,7 @@ actions!(
         GoBack,
         GoForward,
         Downloads,
+        History,
         Settings,
         Print,
         ZoomIn,
@@ -55,6 +56,8 @@ pub fn bind_keys(cx: &mut App) {
         // Chrome pages
         KeyBinding::new("ctrl-j", Downloads, None),
         KeyBinding::new("cmd-j", Downloads, None),
+        KeyBinding::new("ctrl-h", History, None),
+        KeyBinding::new("cmd-h", History, None),
         KeyBinding::new("ctrl-,", Settings, None),
         KeyBinding::new("cmd-,", Settings, None),
         KeyBinding::new("ctrl-p", Print, None),
@@ -92,6 +95,7 @@ pub enum Shortcut {
     GoBack,
     GoForward,
     Downloads,
+    History,
     Settings,
     Print,
     ZoomIn,
@@ -137,6 +141,7 @@ pub fn match_shortcut(keystroke: &Keystroke) -> Option<Shortcut> {
         (false, "r") => Some(Shortcut::Reload),
         (true, "r") | (false, "f5") => Some(Shortcut::HardReload),
         (false, "j") => Some(Shortcut::Downloads),
+        (false, "h") => Some(Shortcut::History),
         (false, ",") => Some(Shortcut::Settings),
         (false, "p") => Some(Shortcut::Print),
         // Shift may be held for Ctrl++ on layouts where + is Shift+=.

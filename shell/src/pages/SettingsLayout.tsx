@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Navigate, Outlet, useParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { Sidebar } from "../components/Sidebar";
@@ -11,6 +11,28 @@ import {
   type NavId,
   type SettingSection,
 } from "../data/settings";
+import { getSettings, setSetting } from "../native/ipc";
+
+const settingKey = (page: NavId, rowId: string) => `settings.${page}.${rowId}`;
+
+function withPersistedToggles(
+  pages: typeof PAGES,
+  values: Record<string, boolean | string | number>,
+): typeof PAGES {
+  return Object.fromEntries(
+    Object.entries(pages).map(([page, sections]) => [
+      page,
+      sections.map((section) => ({
+        ...section,
+        rows: section.rows.map((row) => {
+          const value = values[settingKey(page as NavId, row.id)];
+          if (row.control.kind !== "toggle" || typeof value !== "boolean") return row;
+          return { ...row, control: { kind: "toggle" as const, on: value } };
+        }),
+      })),
+    ]),
+  ) as typeof PAGES;
+}
 
 function filterSections(
   sections: SettingSection[],
@@ -58,6 +80,16 @@ export function SettingsListPage() {
   const [query, setQuery] = useState("");
   const [pages, setPages] = useState(PAGES);
 
+  useEffect(() => {
+    let cancelled = false;
+    void getSettings().then((values) => {
+      if (!cancelled) setPages((current) => withPersistedToggles(current, values));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   if (!isNavId(page)) {
     return <Navigate to={`/settings/${DEFAULT_NAV}`} replace />;
   }
@@ -82,6 +114,13 @@ export function SettingsListPage() {
         };
       });
       return next;
+    });
+    void setSetting(settingKey(active, rowId), on).then((saved) => {
+      if (!saved) {
+        setPages((current) =>
+          withPersistedToggles(current, { [settingKey(active, rowId)]: !on }),
+        );
+      }
     });
   };
 

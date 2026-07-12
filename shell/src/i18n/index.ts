@@ -4,6 +4,7 @@ import en from "./locales/en.json";
 import th from "./locales/th.json";
 import zh from "./locales/zh.json";
 import ja from "./locales/ja.json";
+import { setSetting } from "../native/ipc";
 
 export const LOCALES = [
   { code: "en", labelKey: "langs.en" },
@@ -42,6 +43,7 @@ void i18n.use(initReactI18next).init({
 
 export function setLocale(code: LocaleCode) {
   localStorage.setItem(STORAGE_KEY, code);
+  void setSetting("settings.languages.preferred", code);
   document.documentElement.lang = code === "zh" ? "zh-CN" : code;
   return i18n.changeLanguage(code);
 }

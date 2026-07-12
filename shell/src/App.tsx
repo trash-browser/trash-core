@@ -12,6 +12,7 @@ import { SettingsSubpage } from "./pages/SettingsSubpage";
 import { NewTabPage } from "./pages/NewTabPage";
 import { DownloadManagerPage } from "./pages/DownloadManagerPage";
 import { AdblockManagerPage } from "./pages/AdblockManagerPage";
+import { HistoryPage } from "./pages/HistoryPage";
 import { OverlayPage } from "./overlay/OverlayPage";
 import { PageTransition } from "./motion";
 import { DEFAULT_NAV } from "./data/settings";
@@ -50,6 +51,14 @@ function AnimatedRoutes() {
           element={
             <PageTransition>
               <NewTabPage />
+            </PageTransition>
+          }
+        />
+        <Route
+          path="history"
+          element={
+            <PageTransition>
+              <HistoryPage />
             </PageTransition>
           }
         />
