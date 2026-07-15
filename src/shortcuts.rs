@@ -21,6 +21,9 @@ actions!(
         History,
         Settings,
         Print,
+        Find,
+        FindNext,
+        FindPrev,
         ZoomIn,
         ZoomOut,
         ZoomReset,
@@ -62,6 +65,15 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("cmd-,", Settings, None),
         KeyBinding::new("ctrl-p", Print, None),
         KeyBinding::new("cmd-p", Print, None),
+        // Find in page
+        KeyBinding::new("ctrl-f", Find, None),
+        KeyBinding::new("cmd-f", Find, None),
+        KeyBinding::new("f3", FindNext, None),
+        KeyBinding::new("ctrl-g", FindNext, None),
+        KeyBinding::new("cmd-g", FindNext, None),
+        KeyBinding::new("shift-f3", FindPrev, None),
+        KeyBinding::new("ctrl-shift-g", FindPrev, None),
+        KeyBinding::new("cmd-shift-g", FindPrev, None),
         // Zoom
         KeyBinding::new("ctrl-=", ZoomIn, None),
         KeyBinding::new("cmd-=", ZoomIn, None),
@@ -98,6 +110,9 @@ pub enum Shortcut {
     History,
     Settings,
     Print,
+    Find,
+    FindNext,
+    FindPrev,
     ZoomIn,
     ZoomOut,
     ZoomReset,
@@ -115,6 +130,8 @@ pub fn match_shortcut(keystroke: &Keystroke) -> Option<Shortcut> {
         return match key {
             "f5" if !shift => Some(Shortcut::Reload),
             "f6" => Some(Shortcut::FocusOmnibox),
+            "f3" if !shift => Some(Shortcut::FindNext),
+            "f3" if shift => Some(Shortcut::FindPrev),
             _ => None,
         };
     }
@@ -144,6 +161,9 @@ pub fn match_shortcut(keystroke: &Keystroke) -> Option<Shortcut> {
         (false, "h") => Some(Shortcut::History),
         (false, ",") => Some(Shortcut::Settings),
         (false, "p") => Some(Shortcut::Print),
+        (false, "f") => Some(Shortcut::Find),
+        (false, "g") => Some(Shortcut::FindNext),
+        (true, "g") => Some(Shortcut::FindPrev),
         // Shift may be held for Ctrl++ on layouts where + is Shift+=.
         (_, "=") | (_, "+") => Some(Shortcut::ZoomIn),
         (false, "-") => Some(Shortcut::ZoomOut),

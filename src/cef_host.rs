@@ -65,6 +65,12 @@ pub enum CefEvent {
     /// Chrome shortcut intercepted while the native CEF child has OS focus
     /// (Windows). Linux OSR already catches these in the GPUI key path.
     ChromeShortcut(crate::shortcuts::Shortcut),
+    /// Find-in-page result from CEF (`identifier` is unused by chrome UI).
+    FindResult {
+        active: i32,
+        count: i32,
+        final_update: bool,
+    },
 }
 
 /// A tab whose CEF browser has not been created yet.
@@ -1690,6 +1696,37 @@ pub fn print_page() {
     }
 }
 
+/// Start or continue a find-in-page search on the active browser.
+pub fn find_in_page(query: &str, forward: bool, find_next: bool) {
+    let host = shared()
+        .lock()
+        .ok()
+        .and_then(|s| s.active_browser())
+        .and_then(|b| b.host());
+    let Some(host) = host else {
+        return;
+    };
+    let text = CefString::from(query);
+    host.find(
+        Some(&text),
+        i32::from(forward),
+        0, // match_case = false
+        i32::from(find_next),
+    );
+}
+
+/// Stop find-in-page and optionally clear the highlight selection.
+pub fn stop_finding(clear_selection: bool) {
+    let host = shared()
+        .lock()
+        .ok()
+        .and_then(|s| s.active_browser())
+        .and_then(|b| b.host());
+    if let Some(host) = host {
+        host.stop_finding(i32::from(clear_selection));
+    }
+}
+
 /// Chrome-like discrete zoom steps (always includes 100%).
 const ZOOM_PRESETS: &[i32] = &[
     25, 33, 50, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200, 250, 300, 400, 500,
@@ -2355,6 +2392,9 @@ wrap_client! {
         }
         fn keyboard_handler(&self) -> Option<KeyboardHandler> {
             Some(ContentKeyboardHandler::new())
+        }
+        fn find_handler(&self) -> Option<FindHandler> {
+            Some(ContentFindHandler::new())
         }
         fn download_handler(&self) -> Option<DownloadHandler> {
             Some(ContentDownloadHandler::new())
@@ -3303,6 +3343,28 @@ wrap_keyboard_handler! {
             };
             emit(CefEvent::ChromeShortcut(shortcut));
             1
+        }
+    }
+}
+
+wrap_find_handler! {
+    struct ContentFindHandler;
+
+    impl FindHandler {
+        fn on_find_result(
+            &self,
+            _browser: Option<&mut Browser>,
+            _identifier: ::std::os::raw::c_int,
+            count: ::std::os::raw::c_int,
+            _selection_rect: Option<&Rect>,
+            active_match_ordinal: ::std::os::raw::c_int,
+            final_update: ::std::os::raw::c_int,
+        ) {
+            emit(CefEvent::FindResult {
+                active: active_match_ordinal,
+                count,
+                final_update: final_update != 0,
+            });
         }
     }
 }

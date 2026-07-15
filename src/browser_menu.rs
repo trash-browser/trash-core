@@ -156,7 +156,7 @@ pub fn model() -> MenuModel {
             MenuItem::Submenu {
                 label: l[10].into(),
                 icon: None,
-                items: vec![action("find", l[10], Some("Ctrl+F"), false)],
+                items: vec![action("find", l[10], Some("Ctrl+F"), true)],
             },
             MenuItem::Submenu {
                 label: l[11].into(),

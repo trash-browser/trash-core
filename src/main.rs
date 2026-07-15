@@ -110,6 +110,11 @@ struct Root {
     active: u64,
     next_id: u64,
     omnibox: Entity<Omnibox>,
+    /// Find-in-page field (separate from address omnibox).
+    find_box: Entity<Omnibox>,
+    find_visible: bool,
+    find_active: i32,
+    find_count: i32,
     /// Focus target for the page area so OSR key events reach CEF after click.
     content_focus: FocusHandle,
     /// True while a mouse button pressed on the page is held (drag outside page).
@@ -147,6 +152,7 @@ struct Root {
 impl Root {
     fn new(
         omnibox: Entity<Omnibox>,
+        find_box: Entity<Omnibox>,
         cef_rx: Receiver<CefEvent>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -158,6 +164,20 @@ impl Root {
                     this.url_dirty = false;
                     this.navigate(text, cx);
                 }
+                OmniboxEvent::SubmitBackward(_)
+                | OmniboxEvent::Changed(_)
+                | OmniboxEvent::Escape => {}
+            },
+        )
+        .detach();
+
+        cx.subscribe(
+            &find_box,
+            |this, _emitter, event: &OmniboxEvent, cx| match event {
+                OmniboxEvent::Changed(text) => this.on_find_query_changed(text, cx),
+                OmniboxEvent::Submit(text) => this.find_step(text, true, cx),
+                OmniboxEvent::SubmitBackward(text) => this.find_step(text, false, cx),
+                OmniboxEvent::Escape => this.close_find(cx),
             },
         )
         .detach();
@@ -203,6 +223,10 @@ impl Root {
             active: 1,
             next_id: 2,
             omnibox,
+            find_box,
+            find_visible: false,
+            find_active: 0,
+            find_count: 0,
             content_focus: cx.focus_handle(),
             page_pointer_down: false,
             can_back: false,
@@ -396,6 +420,17 @@ impl Root {
                 self.pending_shortcut = Some(shortcut);
                 cx.notify();
             }
+            CefEvent::FindResult {
+                active,
+                count,
+                final_update,
+            } => {
+                if final_update || count != self.find_count || active != self.find_active {
+                    self.find_active = active;
+                    self.find_count = count;
+                    cx.notify();
+                }
+            }
         }
     }
 
@@ -466,6 +501,7 @@ impl Root {
         cef_host::show_tab(id, &self.start_uri);
         self.zoom_hud_visible = false;
         self.sync_zoom_percent();
+        self.refresh_find_on_active_tab(cx);
         self.sync_discord_rpc();
         cx.notify();
     }
@@ -483,6 +519,7 @@ impl Root {
         cef_host::show_tab(id, &url);
         self.zoom_hud_visible = false;
         self.sync_zoom_percent();
+        self.refresh_find_on_active_tab(cx);
         self.sync_discord_rpc();
         cx.notify();
     }
@@ -790,6 +827,94 @@ impl Root {
         cx.notify();
     }
 
+    fn open_find(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.dismiss_browser_menu(cx);
+        self.find_visible = true;
+        let handle = self.find_box.read(cx).focus_handle(cx);
+        window.focus(&handle, cx);
+        cef_host::focus_chrome();
+        self.find_box.update(cx, |field, cx| field.select_all_text(cx));
+        let query = self.find_box.read(cx).text();
+        if !query.is_empty() {
+            self.find_active = 0;
+            self.find_count = 0;
+            cef_host::find_in_page(&query, true, false);
+        }
+        cx.notify();
+    }
+
+    fn close_find(&mut self, cx: &mut Context<Self>) {
+        if !self.find_visible {
+            return;
+        }
+        self.find_visible = false;
+        self.find_active = 0;
+        self.find_count = 0;
+        cef_host::stop_finding(true);
+        cef_host::focus_content();
+        cx.notify();
+    }
+
+    fn on_find_query_changed(&mut self, text: &str, cx: &mut Context<Self>) {
+        if !self.find_visible {
+            return;
+        }
+        if text.is_empty() {
+            self.find_active = 0;
+            self.find_count = 0;
+            cef_host::stop_finding(true);
+            cx.notify();
+            return;
+        }
+        self.find_active = 0;
+        self.find_count = 0;
+        cef_host::find_in_page(text, true, false);
+        cx.notify();
+    }
+
+    fn find_step(&mut self, text: &str, forward: bool, cx: &mut Context<Self>) {
+        if text.is_empty() {
+            return;
+        }
+        if !self.find_visible {
+            self.find_visible = true;
+        }
+        cef_host::find_in_page(text, forward, true);
+        cx.notify();
+    }
+
+    fn find_next_or_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let query = self.find_box.read(cx).text();
+        if !self.find_visible || query.is_empty() {
+            self.open_find(window, cx);
+            return;
+        }
+        self.find_step(&query, true, cx);
+    }
+
+    fn find_prev_or_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let query = self.find_box.read(cx).text();
+        if !self.find_visible || query.is_empty() {
+            self.open_find(window, cx);
+            return;
+        }
+        self.find_step(&query, false, cx);
+    }
+
+    fn refresh_find_on_active_tab(&mut self, cx: &mut Context<Self>) {
+        if !self.find_visible {
+            return;
+        }
+        self.find_active = 0;
+        self.find_count = 0;
+        let query = self.find_box.read(cx).text();
+        if query.is_empty() {
+            cef_host::stop_finding(true);
+        } else {
+            cef_host::find_in_page(&query, true, false);
+        }
+    }
+
     fn run_shortcut(
         &mut self,
         shortcut: shortcuts::Shortcut,
@@ -823,6 +948,9 @@ impl Root {
                 cef_host::print_page();
                 cef_host::focus_content();
             }
+            Shortcut::Find => self.open_find(window, cx),
+            Shortcut::FindNext => self.find_next_or_open(window, cx),
+            Shortcut::FindPrev => self.find_prev_or_open(window, cx),
             Shortcut::ZoomIn => self.zoom_in(cx),
             Shortcut::ZoomOut => self.zoom_out(cx),
             Shortcut::ZoomReset => self.zoom_reset(cx),
@@ -891,6 +1019,11 @@ impl Root {
             BrowserMenuCommand::Print => {
                 cef_host::print_page();
                 cef_host::focus_content();
+            }
+            BrowserMenuCommand::Find => {
+                // Menu click arrives without Window; open on next paint via deferred shortcut.
+                self.pending_shortcut = Some(shortcuts::Shortcut::Find);
+                cx.notify();
             }
             BrowserMenuCommand::Exit => {
                 self.discord_rpc.clear();
@@ -976,6 +1109,15 @@ impl Render for Root {
             .on_action(cx.listener(|this, _: &shortcuts::Print, window, cx| {
                 this.run_shortcut(shortcuts::Shortcut::Print, window, cx);
             }))
+            .on_action(cx.listener(|this, _: &shortcuts::Find, window, cx| {
+                this.run_shortcut(shortcuts::Shortcut::Find, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &shortcuts::FindNext, window, cx| {
+                this.run_shortcut(shortcuts::Shortcut::FindNext, window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &shortcuts::FindPrev, window, cx| {
+                this.run_shortcut(shortcuts::Shortcut::FindPrev, window, cx);
+            }))
             .on_action(cx.listener(|this, _: &shortcuts::ZoomIn, window, cx| {
                 this.run_shortcut(shortcuts::Shortcut::ZoomIn, window, cx);
             }))
@@ -1039,6 +1181,7 @@ impl Render for Root {
                     .min_h_0()
                     .child(content_surface())
                     .when(self.zoom_hud_visible, |el| el.child(self.zoom_hud(cx)))
+                    .when(self.find_visible, |el| el.child(self.find_bar(cx)))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, event: &MouseDownEvent, window, cx| {
@@ -1332,6 +1475,112 @@ impl Root {
                 this.dismiss_browser_menu(cx);
                 this.zoom_reset(cx);
             }))
+    }
+
+    /// Chrome-style find bar over the page (top-right).
+    fn find_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let match_label = if self.find_box.read(cx).text().is_empty() {
+            SharedString::from("")
+        } else if self.find_count == 0 {
+            SharedString::from("No results")
+        } else {
+            SharedString::from(format!("{} of {}", self.find_active, self.find_count))
+        };
+
+        div()
+            .id("find-bar")
+            .absolute()
+            .top_3()
+            .right_3()
+            .flex()
+            .items_center()
+            .gap_1()
+            .h(px(40.0))
+            .pl_3()
+            .pr_2()
+            .rounded_lg()
+            .bg(rgb(BAR))
+            .border_1()
+            .border_color(rgb(BORDER))
+            .shadow_lg()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .w(px(200.0))
+                    .h(px(28.0))
+                    .px_2()
+                    .rounded_md()
+                    .bg(rgb(FIELD))
+                    .border_1()
+                    .border_color(rgb(BORDER))
+                    .child(self.find_box.clone())
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _, window, cx| {
+                            let handle = this.find_box.read(cx).focus_handle(cx);
+                            window.focus(&handle, cx);
+                            cef_host::focus_chrome();
+                        }),
+                    ),
+            )
+            .child(
+                div()
+                    .min_w(px(72.0))
+                    .px_1()
+                    .text_xs()
+                    .text_color(rgb(MUTED))
+                    .child(match_label),
+            )
+            .child(
+                div()
+                    .id("find-prev")
+                    .size(px(28.0))
+                    .rounded_md()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .hover(|s| s.bg(rgb(HOVER)))
+                    .child(outline_icon("chevron-up", 16.0))
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        let query = this.find_box.read(cx).text();
+                        this.find_step(&query, false, cx);
+                    })),
+            )
+            .child(
+                div()
+                    .id("find-next")
+                    .size(px(28.0))
+                    .rounded_md()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .hover(|s| s.bg(rgb(HOVER)))
+                    .child(outline_icon("chevron-down", 16.0))
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        let query = this.find_box.read(cx).text();
+                        this.find_step(&query, true, cx);
+                    })),
+            )
+            .child(
+                div()
+                    .id("find-close")
+                    .size(px(28.0))
+                    .rounded_md()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .cursor_pointer()
+                    .hover(|s| s.bg(rgb(HOVER)))
+                    .child(outline_icon("x", 16.0))
+                    .on_click(cx.listener(|this, _, _window, cx| {
+                        this.close_find(cx);
+                    })),
+            )
     }
 
     /// Transient zoom bubble (Chrome-like) over the page after Ctrl+/-/0.
@@ -1669,7 +1918,13 @@ fn main() {
             },
             |window, cx| {
                 let omnibox = cx.new(Omnibox::new);
-                cx.new(|cx| Root::new(omnibox, cef_rx, window, cx))
+                let find_box = cx.new(|cx| {
+                    let mut field = Omnibox::new(cx);
+                    field.suppress_submit_blur = true;
+                    field.set_placeholder("Find in page", cx);
+                    field
+                });
+                cx.new(|cx| Root::new(omnibox, find_box, cef_rx, window, cx))
             },
         )
         .unwrap();

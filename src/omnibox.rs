@@ -30,12 +30,19 @@ actions!(
         Cut,
         Copy,
         Submit,
+        SubmitBackward,
         Escape,
     ]
 );
 
 pub enum OmniboxEvent {
     Submit(String),
+    /// Shift+Enter — used by Find in page for previous match.
+    SubmitBackward(String),
+    /// Fired whenever the field text changes (typing, paste, delete, set_text).
+    Changed(String),
+    /// Escape was pressed while the field had focus.
+    Escape,
 }
 
 pub struct Omnibox {
@@ -48,6 +55,8 @@ pub struct Omnibox {
     last_layout: Option<ShapedLine>,
     last_bounds: Option<Bounds<Pixels>>,
     is_selecting: bool,
+    /// When true, Enter submits without blurring (used by Find in page).
+    pub suppress_submit_blur: bool,
 }
 
 impl EventEmitter<OmniboxEvent> for Omnibox {}
@@ -64,7 +73,17 @@ impl Omnibox {
             last_layout: None,
             last_bounds: None,
             is_selecting: false,
+            suppress_submit_blur: false,
         }
+    }
+
+    pub fn set_placeholder(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.placeholder = text.into();
+        cx.notify();
+    }
+
+    pub fn text(&self) -> String {
+        self.content.to_string()
     }
 
     pub fn set_text(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
@@ -74,6 +93,7 @@ impl Omnibox {
         self.selected_range = len..len;
         self.selection_reversed = false;
         self.marked_range = None;
+        cx.emit(OmniboxEvent::Changed(self.content.to_string()));
         cx.notify();
     }
 
@@ -205,12 +225,25 @@ impl Omnibox {
 
     fn submit(&mut self, _: &Submit, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.content.to_string();
-        window.blur();
+        if !self.suppress_submit_blur {
+            window.blur();
+        }
         cx.emit(OmniboxEvent::Submit(text));
     }
 
-    fn escape(&mut self, _: &Escape, window: &mut Window, _: &mut Context<Self>) {
-        window.blur();
+    fn submit_backward(&mut self, _: &SubmitBackward, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.content.to_string();
+        if !self.suppress_submit_blur {
+            window.blur();
+        }
+        cx.emit(OmniboxEvent::SubmitBackward(text));
+    }
+
+    fn escape(&mut self, _: &Escape, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.suppress_submit_blur {
+            window.blur();
+        }
+        cx.emit(OmniboxEvent::Escape);
     }
 
     fn on_mouse_down(
@@ -473,6 +506,7 @@ impl EntityInputHandler for Omnibox {
                 .into();
         self.selected_range = range.start + new_text.len()..range.start + new_text.len();
         self.marked_range.take();
+        cx.emit(OmniboxEvent::Changed(self.content.to_string()));
         cx.notify();
     }
 
@@ -503,6 +537,7 @@ impl EntityInputHandler for Omnibox {
             .map(|range_utf16| self.range_from_utf16(range_utf16))
             .map(|new_range| new_range.start + range.start..new_range.end + range.end)
             .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
+        cx.emit(OmniboxEvent::Changed(self.content.to_string()));
         cx.notify();
     }
 
@@ -766,6 +801,7 @@ impl Render for Omnibox {
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::copy))
             .on_action(cx.listener(Self::submit))
+            .on_action(cx.listener(Self::submit_backward))
             .on_action(cx.listener(Self::escape))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
@@ -806,6 +842,7 @@ pub fn bind_keys(cx: &mut App) {
         KeyBinding::new("home", Home, Some("Omnibox")),
         KeyBinding::new("end", End, Some("Omnibox")),
         KeyBinding::new("enter", Submit, Some("Omnibox")),
+        KeyBinding::new("shift-enter", SubmitBackward, Some("Omnibox")),
         KeyBinding::new("escape", Escape, Some("Omnibox")),
     ]);
 }
